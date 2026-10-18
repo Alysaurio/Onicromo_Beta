@@ -235,7 +235,7 @@ class UnrealRemoteClient {
       this.#tcpChannel = null;
       this.#connectedNode = null;
       if (this.#pendingResult) {
-        this.#pendingResult({ success: false, result: "La conexión con el editor se cerró (¿editor cerrado o reiniciado?).", command: "" });
+        this.#pendingResult({ success: false, result: "", output: "La conexión con el editor se cerró (¿editor cerrado o reiniciado?).", command: "" });
         this.#pendingResult = null;
       }
     });
@@ -356,7 +356,11 @@ class UnrealRemoteClient {
     this.#connectedNode = null;
   }
 
-  async runCommand(code: string, mode = MODE_EXEC_FILE, timeoutMs = 120_000): Promise<{ success: boolean; result: string }> {
+  async runCommand(
+    code: string,
+    mode = MODE_EXEC_FILE,
+    timeoutMs = 120_000,
+  ): Promise<{ success: boolean; result: string; output: string }> {
     await this.#ensureConnection();
     const socket = this.#tcpChannel!;
     const message = {
@@ -368,7 +372,7 @@ class UnrealRemoteClient {
       data: { command: code, unattended: true, exec_mode: mode },
     };
     const payload = encoder.encode(JSON.stringify(message));
-    return await new Promise<{ success: boolean; result: string }>((resolve) => {
+    return await new Promise<{ success: boolean; result: string; output: string }>((resolve) => {
       const timer = setTimeout(() => {
         if (this.#pendingResult) {
           this.#pendingResult = null;
@@ -376,16 +380,27 @@ class UnrealRemoteClient {
         this.#closeChannel(); // forzar reconexión en el siguiente comando
         resolve({
           success: false,
-          result:
+          result: "",
+          output:
             `Timeout (${timeoutMs / 1000}s) esperando resultado del editor. ` +
             `Si el editor está en PIE/compilando, reintenta; el comando se ejecuta en el Game Thread.`,
         });
       }, timeoutMs);
       this.#pendingResult = (data) => {
         clearTimeout(timer);
+        // data: { success, command, result, output:[{type,output}] } — ver PythonScriptRemoteExecution.cpp
+        const outArr = Array.isArray(data.output) ? (data.output as Array<Record<string, unknown>>) : [];
+        const outputText = outArr
+          .map((e) => {
+            const t = String(e.type ?? "Info");
+            const o = String(e.output ?? "");
+            return t === "Info" ? o : `[${t}] ${o}`;
+          })
+          .join("");
         resolve({
           success: data.success === true,
           result: typeof data.result === "string" ? data.result : JSON.stringify(data),
+          output: outputText,
         });
       };
       socket.write(payload, (err) => {
@@ -393,7 +408,7 @@ class UnrealRemoteClient {
           clearTimeout(timer);
           this.#pendingResult = null;
           this.#closeChannel();
-          resolve({ success: false, result: `Error de escritura TCP: ${err.message}` });
+          resolve({ success: false, result: "", output: `Error de escritura TCP: ${err.message}` });
         }
       });
     });
@@ -437,11 +452,15 @@ payload = {}
 try:
     payload["engine_version"] = unreal.SystemLibrary.get_engine_version()
     payload["project"] = unreal.SystemLibrary.get_game_name()
-    world = unreal.get_editor_subsystem(unreal.EditorWorldSubsystem).get_editor_world()
-    payload["world"] = world.get_path_name() if world else None
     eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
     actors = eas.get_all_level_actors()
     payload["actor_count"] = len(actors)
+    world = None
+    try:
+        world = unreal.EditorLevelLibrary.get_editor_world()
+    except Exception:
+        pass
+    payload["world"] = world.get_path_name() if world else None
     try:
         payload["selected"] = [a.get_actor_label() for a in eas.get_selected_level_actors()]
     except Exception:
@@ -475,7 +494,7 @@ print("${RESULT_MARKER}" + json.dumps(payload, default=str))
 import unreal, json
 flt = ${pyStr(String(args.filter ?? ""))}.lower()
 limit = ${Number(args.limit ?? 200)}
-include_components = ${args.include_components === true}
+include_components = ${args.include_components === true ? "True" : "False"}
 eas = unreal.get_editor_subsystem(unreal.EditorActorSubsystem)
 out = []
 total = 0
@@ -494,7 +513,7 @@ for a in eas.get_all_level_actors():
         "rotation": [round(rot.pitch, 2), round(rot.yaw, 2), round(rot.roll, 2)],
     }
     if include_components:
-        entry["components"] = [c.get_name() + " (" + c.get_class().get_path_name() + ")" for c in a.get_components()]
+        entry["components"] = [c.get_name() + " (" + c.get_class().get_path_name() + ")" for c in a.get_components_by_class(unreal.ActorComponent)]
     out.append(entry)
     if len(out) >= limit:
         break
@@ -604,12 +623,12 @@ try:
     sc = ${args.scale ? JSON.stringify((args.scale as number[]).map(Number)) : "None"}
     if sc is not None:
         actor.set_actor_scale3d(unreal.Vector(*sc))
-    newloc = actor.get_actor_location(); newrot = actor.get_actor_rotation()
-    payload["ok"] = True
+    newloc = actor.get_actor_location(); newrot = actor.get_actor_rotation(); s = actor.get_actor_scale3d()
     payload["label"] = actor.get_actor_label()
     payload["location"] = [round(newloc.x, 2), round(newloc.y, 2), round(newloc.z, 2)]
     payload["rotation"] = [round(newrot.pitch, 2), round(newrot.yaw, 2), round(newrot.roll, 2)]
-    payload["scale"] = [round(v, 2) for v in actor.get_actor_scale3d()]
+    payload["scale"] = [round(s.x, 2), round(s.y, 2), round(s.z, 2)]
+    payload["ok"] = True
 except Exception as e:
     import traceback
     payload["error"] = str(e)
@@ -724,12 +743,13 @@ try:
     obj = actor
     if comp_name:
         comp = None
-        for c in actor.get_components():
+        comps = actor.get_components_by_class(unreal.ActorComponent)
+        for c in comps:
             if c.get_name() == comp_name or c.get_name().lower() == comp_name.lower():
                 comp = c
                 break
         if comp is None:
-            raise RuntimeError("Componente '" + comp_name + "' no encontrado en '" + actor_label + "'. Componentes: " + ", ".join(c.get_name() for c in actor.get_components()))
+            raise RuntimeError("Componente '" + comp_name + "' no encontrado en '" + actor_label + "'. Componentes: " + ", ".join(c.get_name() for c in comps))
         obj = comp
     prop = ${pyStr(String(args.property))}
     value = ${JSON.stringify(args.value ?? null)}
@@ -777,12 +797,12 @@ print("${RESULT_MARKER}" + json.dumps(payload, default=str))
         parent_class: { type: "string", description: 'Clase padre, ej. "/Script/Engine.Actor" o "/Script/Onicromo_Beta.TwinStickNPC". Defecto Actor.', default: "/Script/Engine.Actor" },
         components: {
           type: "array",
-          description: "Componentes a añadir al Blueprint.",
+          description: "Componentes a añadir a la plantilla del BP (vía SubobjectDataSubsystem; el nombre de variable lo asigna el editor).",
           items: {
             type: "object",
             properties: {
               class_path: { type: "string", description: 'ej. "/Script/Engine.StaticMeshComponent".' },
-              name: { type: "string", description: "Nombre de la variable del componente." },
+              name: { type: "string", description: "Identificador del componente para el informe." },
               properties: { type: "object", description: "Propiedades por defecto, ej. static_mesh." },
             },
             required: ["class_path"],
@@ -818,31 +838,63 @@ try:
         raise RuntimeError("create_asset devolvió None (¿carpeta inexistente o nombre inválido?)")
     payload["asset"] = bp.get_path_name()
     comps_ok, comps_failed = [], {}
-    for spec in ${JSON.stringify(args.components ?? [])}:
-        try:
-            ccls = unreal.load_class(None, spec.get("class_path", ""))
-            if ccls is None:
-                raise RuntimeError("Clase no encontrada: " + spec.get("class_path", ""))
+    specs = ${JSON.stringify(args.components ?? [])}
+    if specs:
+        # UE 5.7: añadir componentes a la plantilla del BP vía SubobjectDataSubsystem
+        sds = unreal.get_engine_subsystem(unreal.SubobjectDataSubsystem)
+        handles = sds.k2_gather_subobject_data_for_blueprint(bp)
+        for spec in specs:
             cname = spec.get("name") or spec.get("class_path", "Component").split(".")[-1]
-            comp = unreal.BlueprintEditorLibrary.add_component_to_blueprint(bp, ccls, cname)
-            cprops = spec.get("properties") or {}
-            for k, v in cprops.items():
-                try:
-                    if isinstance(v, str) and (v.startswith("/Engine/") or v.startswith("/Game/")):
-                        v = unreal.load_asset(v)
-                    comp.set_editor_property(k, v)
-                except Exception as pe:
-                    comps_failed[cname + "." + k] = str(pe)
-            comps_ok.append(cname)
-        except Exception as ce:
-            comps_failed[spec.get("name", "?")] = str(ce)
+            try:
+                ccls = unreal.load_class(None, spec.get("class_path", ""))
+                if ccls is None:
+                    raise RuntimeError("Clase no encontrada: " + spec.get("class_path", ""))
+                added = None
+                for h in handles:
+                    p = unreal.AddNewSubobjectParams()
+                    p.blueprint_context = bp
+                    p.new_class = ccls
+                    p.parent_handle = h
+                    p.conform_transform_to_parent = False
+                    r = sds.add_new_subobject(p)
+                    cand = r[0] if isinstance(r, (list, tuple)) else r
+                    if cand is not None:
+                        added = cand
+                        break
+                if added is None:
+                    raise RuntimeError("add_new_subobject devolvió handle inválido para " + spec.get("class_path", ""))
+                data = sds.k2_find_subobject_data_from_handle(added)
+                exp = data.export_text()
+                path = ""
+                if 'WeakObjectPtr="' in exp:
+                    inner = exp.split('WeakObjectPtr="', 1)[1].split('"', 1)[0]
+                    parts = inner.split("'")
+                    if len(parts) >= 3:
+                        path = parts[-2]
+                template = unreal.load_object(None, path) if path else None
+                if template is None:
+                    comps_failed[cname] = "componente añadido pero no se pudo cargar la plantilla: " + exp[:200]
+                    continue
+                cprops = spec.get("properties") or {}
+                applied = []
+                for k, v in cprops.items():
+                    try:
+                        if isinstance(v, str) and (v.startswith("/Engine/") or v.startswith("/Game/")):
+                            v = unreal.load_asset(v)
+                        template.set_editor_property(k, v)
+                        applied.append(k)
+                    except Exception as pe:
+                        comps_failed[cname + "." + k] = str(pe)
+                comps_ok.append({"name": cname, "template": template.get_name(), "properties": applied})
+            except Exception as ce:
+                comps_failed[cname] = str(ce)
     payload["components_added"] = comps_ok
     if comps_failed:
         payload["components_failed"] = comps_failed
-    if ${args.compile !== false}:
+    if ${args.compile !== false ? "True" : "False"}:
         unreal.BlueprintEditorLibrary.compile_blueprint(bp)
         payload["compiled"] = True
-    if ${args.save !== false}:
+    if ${args.save !== false ? "True" : "False"}:
         saved = unreal.EditorAssetLibrary.save_asset(bp.get_path_name())
         payload["saved"] = bool(saved)
     payload["ok"] = True
@@ -871,7 +923,7 @@ print("${RESULT_MARKER}" + json.dumps(payload, default=str))
 import unreal, json
 path = ${pyStr(String(args.path ?? "/Game"))}
 flt = ${pyStr(String(args.filter ?? ""))}.lower()
-recursive = ${args.recursive !== false}
+recursive = ${args.recursive !== false ? "True" : "False"}
 limit = ${Number(args.limit ?? 200)}
 payload = {"ok": False}
 try:
@@ -970,15 +1022,17 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<{ 
     const code = String(args.code ?? "");
     const mode = String(args.mode ?? MODE_EXEC_FILE);
     const timeoutSec = Number(args.timeout_seconds ?? 120);
-    const result = await client.runCommand(code, mode, timeoutSec * 1000);
-    return { text: result.result.trim() || "(sin salida)", isError: !result.success };
+    const r = await client.runCommand(code, mode, timeoutSec * 1000);
+    const parts = [r.output.trim(), r.result.trim()].filter(Boolean);
+    return { text: parts.join("\n") || "(sin salida)", isError: !r.success };
   }
 
   const code = tool.build(args);
-  const result = await client.runCommand(code, MODE_EXEC_FILE, tool.timeoutMs);
+  const r = await client.runCommand(code, MODE_EXEC_FILE, tool.timeoutMs);
+  const fullText = [r.output, r.result].filter(Boolean).join("\n");
 
   // Buscar marcador estructurado ###MCP###<json>
-  const lines = result.result.split(/\r?\n/);
+  const lines = fullText.split(/\r?\n/);
   let structured: Record<string, unknown> | null = null;
   for (let i = lines.length - 1; i >= 0; i--) {
     const idx = lines[i].indexOf(RESULT_MARKER);
@@ -993,12 +1047,12 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<{ 
   }
 
   if (structured) {
-    const ok = structured.ok !== false && result.success;
+    const ok = structured.ok !== false && r.success;
     const rest = lines.filter((l) => !l.includes(RESULT_MARKER)).join("\n").trim();
     const text = JSON.stringify(structured, null, 2) + (rest ? `\n--- salida del editor ---\n${rest}` : "");
     return { text, isError: !ok };
   }
-  return { text: result.result.trim() || "(sin salida)", isError: !result.success };
+  return { text: fullText.trim() || "(sin salida)", isError: !r.success };
 }
 
 async function handleMessage(msg: Record<string, unknown>): Promise<void> {

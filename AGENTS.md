@@ -148,7 +148,7 @@ Herramientas disponibles (servidor MCP `unreal`, §8):
 | `unreal_set_transform` | Mover/rotar/escalar actores por label |
 | `unreal_add_component` | Añadir componentes (StaticMeshComponent, PointLight...) |
 | `unreal_set_property` | `set_editor_property` sobre actores/componentes |
-| `unreal_create_blueprint` | Crear BP con parent class + componentes, compilar y guardar |
+| `unreal_create_blueprint` | Crear BP con parent class + componentes en plantilla (SubobjectDataSubsystem), compilar y guardar |
 | `unreal_list_assets` | Listar assets de `/Game` con filtro |
 | `unreal_screenshot` | Screenshot del viewport del editor (PNG en `Saved/Screenshots`)`) |
 | `unreal_exec_python` | Python arbitrario del editor (herramienta comodín) |
