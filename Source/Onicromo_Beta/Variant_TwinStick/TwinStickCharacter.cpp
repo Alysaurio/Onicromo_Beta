@@ -9,6 +9,7 @@
 #include "InputAction.h"
 #include "TwinStickGameMode.h"
 #include "TwinStickAoEAttack.h"
+#include "TrailHistoryComponent.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "TwinStickProjectile.h"
 #include "Engine/World.h"
@@ -35,6 +36,9 @@ ATwinStickCharacter::ATwinStickCharacter()
 	Camera->SetupAttachment(SpringArm);
 
 	Camera->SetFieldOfView(75.0f);
+
+	// create the trail history component (used by trailing pickups like a following key)
+	TrailComponent = CreateDefaultSubobject<UTrailHistoryComponent>(TEXT("Trail"));
 
 	// configure the character movement
 	GetCharacterMovement()->GravityScale = 1.5f;
