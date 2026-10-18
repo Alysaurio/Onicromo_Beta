@@ -9,6 +9,7 @@
 
 class USpringArmComponent;
 class UCameraComponent;
+class UTrailHistoryComponent;
 struct FInputActionValue;
 class APlayerController;
 class UInputAction;
@@ -32,6 +33,10 @@ class ATwinStickCharacter : public ACharacter
 	/** Player Camera */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
 	UCameraComponent* Camera;
+
+	/** Records the character's path so trailing actors (e.g. a following key) can retrace it */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
+	UTrailHistoryComponent* TrailComponent;
 
 protected:
 
@@ -201,6 +206,10 @@ public:
 
 	/** Gives the player a pickup item */
 	void AddPickup();
+
+	/** Returns the trail history component used by trailing actors */
+	UFUNCTION(BlueprintCallable, Category = "Trail")
+	UTrailHistoryComponent* GetTrailComponent() const { return TrailComponent; }
 
 protected:
 

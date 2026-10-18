@@ -1,0 +1,21 @@
+{
+	"$schema": "https://opencode.ai/config.json",
+	"mcp": {
+		"unreal": {
+			"type": "local",
+			"command": [
+				"C:/Users/SrDragonDoro/AppData/Local/Microsoft/WinGet/Links/deno.exe",
+				"run",
+				"-A",
+				"--no-prompt",
+				"--quiet",
+				"A:/Proyectos/Unreal/Onicromo_Beta/Tools/unreal-mcp/server.ts"
+			],
+			"environment": {
+				"UNREAL_PROJECT_ROOT": "A:/Proyectos/Unreal/Onicromo_Beta",
+				"UNREAL_PROJECT_FILTER": "Onicromo_Beta"
+			},
+			"enabled": true
+		}
+	}
+}
