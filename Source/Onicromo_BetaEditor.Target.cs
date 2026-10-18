@@ -8,7 +8,7 @@ public class Onicromo_BetaEditorTarget : TargetRules
 	public Onicromo_BetaEditorTarget(TargetInfo Target) : base(Target)
 	{
 		Type = TargetType.Editor;
-		DefaultBuildSettings = BuildSettingsVersion.V6;
+		DefaultBuildSettings = BuildSettingsVersion.V7;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_7;
 		ExtraModuleNames.Add("Onicromo_Beta");
 	}

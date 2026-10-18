@@ -11,7 +11,7 @@ Directrices para agentes de desarrollo (OpenCode) sobre este proyecto. El editor
 | Campo | Valor |
 |---|---|
 | Proyecto | `Onicromo_Beta.uproject` |
-| Motor | Unreal Engine **5.7** (`C:\Program Files\Epic Games\UE_5.7`) |
+| Motor | Unreal Engine **5.8.3** (`C:\Program Files\Epic Games\UE_5.8`; la 5.7.4 permanece instalada como referencia) |
 | Plantilla base | TopDown (C++) con dos variantes: **TwinStick** y **Strategy** |
 | Módulo C++ | `Onicromo_Beta` (Editor target: `Onicromo_BetaEditor`) |
 | Mapa por defecto | `/Game/TopDown/Lvl_TopDown` (`Config/DefaultEngine.ini`) |
@@ -190,6 +190,10 @@ Herramientas disponibles (servidor MCP `unreal`, §8):
 
 - **Archivo de config**: `opencode.json` (raíz) define el MCP local `unreal`:
   `deno run -A Tools/unreal-mcp/server.ts` (Deno 2.9, sin dependencias externas).
+- **Capas oficiales de UE 5.8** (ver `GUIA_MAESTRA.md`): plugins
+  `ModelContextProtocol` ("Unreal MCP", servidor HTTP en `http://127.0.0.1:8000/mcp`,
+  arranque con la consola `ModelContextProtocol.StartServer`), `MCPClientToolset`,
+  `EditorToolset` y `Terminal`. Conviven con el MCP local de este proyecto.
 - **Transporte**: stdio JSON-RPC (MCP). El servidor habla con el editor mediante el
   protocolo oficial **Python Remote Execution v1** del plugin `PythonScriptPlugin`
   (UDP multicast descubrimiento `239.0.0.1:6766`; canal de comandos TCP `127.0.0.1:6776`
@@ -219,13 +223,13 @@ Herramientas disponibles (servidor MCP `unreal`, §8):
 
 ```bat
 :: Compilar editor (desde CMD/PowerShell)
-"C:\Program Files\Epic Games\UE_5.7\Engine\Build\BatchFiles\Build.bat" Onicromo_BetaEditor Win64 Development -Project="A:\Proyectos\Unreal\Onicromo_Beta\Onicromo_Beta.uproject" -WaitMutex
+"C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat" Onicromo_BetaEditor Win64 Development -Project="A:\Proyectos\Unreal\Onicromo_Beta\Onicromo_Beta.uproject" -WaitMutex
 
 :: Generar proyecto de VS
-"C:\Program Files\Epic Games\UE_5.7\Engine\Build\BatchFiles\Build.bat" -projectfiles -project="A:\Proyectos\Unreal\Onicromo_Beta\Onicromo_Beta.uproject" -game -engine
+"C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat" -projectfiles -project="A:\Proyectos\Unreal\Onicromo_Beta\Onicromo_Beta.uproject" -game -engine
 ```
 
-- Compilador: MSVC (VS 2022+), C++20 (UE 5.7).
+- Compilador: MSVC (VS 2022+), C++20 (UE 5.8).
 - Live Coding en editor: `Ctrl+Alt+F11` (solo cambios compatibles en runtime).
 
 ---
