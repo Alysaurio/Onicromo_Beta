@@ -112,6 +112,12 @@ Onicromo_Beta/
 - Los cambios C++ requieren **recompilar** (ver §7). Durante desarrollo con editor
   abierto, Live Coding (`Ctrl+Alt+F11`) para cambios no-PDO; cambios en
   `UCLASS`/`USTRUCT`/`UENUM` o `.uproject`/`Build.cs` → cerrar editor y recompilar.
+- **`.uproject` — sección `Modules` obligatoria**: el editor solo carga el DLL del
+  módulo C++ en runtime si `Onicromo_Beta.uproject` conserva el bloque
+  `Modules` (`Name: Onicromo_Beta, Type: Runtime, LoadingPhase: Default`).
+  Si se edita el `.uproject` (añadir plugins, etc.) **preservar ese bloque**; sin él,
+  `/Script/Onicromo_Beta.*` no existe en el editor (Python `load_class` → `None`) y
+  ningún BP puede heredar de las clases C++ del proyecto aunque el binario esté compilado.
 
 ---
 
@@ -204,6 +210,7 @@ Herramientas disponibles (servidor MCP `unreal`, §8):
 | "puerto en uso" (TCP 6766/6776) | Otro cliente de remote execution conectado; cerrar procesos `python`/`deno` colgados |
 | Sin respuesta durante PIE largo | Normal: reintentar cuando el juego esté en pausa |
 | Fallos tras renombrar carpetas MCP | El server está en `Tools/unreal-mcp/server.ts`; actualizar la ruta en `opencode.json` |
+| Python `load_class('/Script/Onicromo_Beta.*')` → `None` o BP sin clase padre | El módulo C++ del proyecto **no está cargado**: verificar que `Onicromo_Beta.uproject` conserva la sección `Modules` (ver §3) y reiniciar el editor |
 | Firewall | Permitir tráfico **local** UDP 239.0.0.1:6766 y TCP loopback |
 
 ---
@@ -232,4 +239,25 @@ Herramientas disponibles (servidor MCP `unreal`, §8):
 5. Compilar BP (`compile_blueprint`) y guardar assets cuando corresponda.
 6. Informar al usuario de cambios realizados y de si falta guardar algún mapa.
 
-*Última actualización: 2026-10-17. Generado para OpenCode + UnrealEngine 5.7 MCP.*
+## 9. Sistema de llaves seguidoras (`BP_FollowKey`)
+
+- `BP_FollowKey` (`Content/Variant_TwinStick/Blueprints/`) es hijo de
+  `BP_TwinStickPickup` con **`Follows Player = True`**: al solaparse **no se
+  consume**, sino que empieza a retraer la ruta del líder (estilo The Binding of
+  Isaac). Varias llaves se encadenan en cola (`ChainSpacing`).
+- **El líder puede ser cualquier pawn controlado por el jugador** (ver
+  `ATwinStickPickup::NotifyActorBeginOverlap`): se busca un
+  `UTrailHistoryComponent` en el pawn y, si no existe, **se crea en runtime**
+  (`TrailRuntime`). Por eso funciona igual en `LVL_TwinStick`
+  (`BP_TwinStickCharacter`) que en niveles con `BP_TopDownGameMode`/otros.
+- `BP_TopDownCharacter` lleva además el componente **`TrailHistory`** en su
+  plantilla (añadido vía MCP), para que el historial exista desde el spawn.
+  Los pawn sin componente heredan el fallback runtime (el historial empieza
+  al recoger la llave).
+- Las pickups **normales** (`Follows Player = False`) siguen comportándose como
+  en la plantilla: solo las consume `ATwinStickCharacter`.
+- Los NPCs/IA ignoran las llaves follow (`IsPlayerControlled()`).
+- Añadir un personaje jugable nuevo no requiere cambios: basta con ser poseído
+  por un PlayerController.
+
+*Última actualización: 2026-10-18. Generado para OpenCode + UnrealEngine 5.7 MCP.*

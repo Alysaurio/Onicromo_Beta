@@ -8,6 +8,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "TrailHistoryComponent.h"
 #include "Engine/World.h"
+#include "GameFramework/Pawn.h"
 
 ATwinStickPickup::ATwinStickPickup()
 {
@@ -42,16 +43,41 @@ void ATwinStickPickup::NotifyActorBeginOverlap(AActor* OtherActor)
 {
 	Super::NotifyActorBeginOverlap(OtherActor);
 
-	// have we overlapped the player character?
-	if (ATwinStickCharacter* PlayerCharacter = Cast<ATwinStickCharacter>(OtherActor))
+	// only pawns can react to a pickup
+	APawn* OverlappingPawn = Cast<APawn>(OtherActor);
+
+	if (!OverlappingPawn)
 	{
-		// trail pickups become followers instead of being consumed
-		if (bFollowsPlayer)
+		return;
+	}
+
+	// follow keys trail the player-controlled character whatever its class is:
+	// they look for the path recorder and create one on the fly when the
+	// character doesn't ship with a TrailHistoryComponent (e.g. BP_TopDownCharacter)
+	if (bFollowsPlayer)
+	{
+		// AI pawns ignore the chain (the TwinStick NPCs always did)
+		if (!OverlappingPawn->IsPlayerControlled())
 		{
-			StartFollowing(PlayerCharacter);
 			return;
 		}
 
+		UTrailHistoryComponent* Trail = OverlappingPawn->FindComponentByClass<UTrailHistoryComponent>();
+
+		if (!Trail)
+		{
+			// runtime recorder: registered now, its recorded path starts at this overlap
+			Trail = NewObject<UTrailHistoryComponent>(OverlappingPawn, TEXT("TrailRuntime"));
+			Trail->RegisterComponent();
+		}
+
+		StartFollowing(Trail);
+		return;
+	}
+
+	// regular pickups keep the original template behavior: only the TwinStick character consumes them
+	if (ATwinStickCharacter* PlayerCharacter = Cast<ATwinStickCharacter>(OtherActor))
+	{
 		Collect(PlayerCharacter);
 	}
 }
@@ -87,7 +113,7 @@ void ATwinStickPickup::Collect(ATwinStickCharacter* PlayerCharacter)
 	Destroy();
 }
 
-void ATwinStickPickup::StartFollowing(ATwinStickCharacter* PlayerCharacter)
+void ATwinStickPickup::StartFollowing(UTrailHistoryComponent* InTrail)
 {
 	// already following? ignore the extra overlap
 	if (FollowedTrail)
@@ -95,14 +121,13 @@ void ATwinStickPickup::StartFollowing(ATwinStickCharacter* PlayerCharacter)
 		return;
 	}
 
-	FollowedTrail = PlayerCharacter->GetTrailComponent();
-
-	// no trail available: keep the old behavior
-	if (!FollowedTrail)
+	// defensive: nothing to trail (follow keys are never consumed as a fallback)
+	if (!InTrail)
 	{
-		Collect(PlayerCharacter);
 		return;
 	}
+
+	FollowedTrail = InTrail;
 
 	// stop generating overlap events
 	CollisionSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);

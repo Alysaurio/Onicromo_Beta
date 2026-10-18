@@ -98,8 +98,8 @@ protected:
 	/** Phase offset so chained followers don't sway in sync */
 	float SwayPhase = 0.0f;
 
-	/** Starts trailing the given character */
-	void StartFollowing(ATwinStickCharacter* PlayerCharacter);
+	/** Starts trailing the given path recorder, taking the last slot in its chain */
+	void StartFollowing(UTrailHistoryComponent* InTrail);
 
 	/** Moves the pickup along the leader's trail */
 	void UpdateFollow(float DeltaTime);
