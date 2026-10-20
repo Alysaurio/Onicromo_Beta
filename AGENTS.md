@@ -44,8 +44,9 @@ Onicromo_Beta/
 │       │   ├── AI/          # TwinStickNPC, TwinStickAIController, TwinStickSpawner, StateTree...
 │       │   ├── Gameplay/    # TwinStickProjectile, TwinStickPickup, TwinStickAoEAttack
 │       │   └── UI/          # TwinStickUI
-│       └── Variant_Strategy/                     # Strategy* (GameMode, Pawn, Unit, PlayerController)
-│           └── UI/          # StrategyUI, StrategyHUD
+│       ├── Variant_Strategy/                     # Strategy* (GameMode, Pawn, Unit, PlayerController)
+│       │   └── UI/          # StrategyUI, StrategyHUD
+│       └── OniroCromo/Prototipos/                # Proto* (prototipos de colisión del GDD, laboratorio)
 ├── Tools/unreal-mcp/server.ts   # Servidor MCP local (Deno, stdio)
 ├── opencode.json                # Config de OpenCode (MCP "unreal")
 └── AGENTS.md                    # Este archivo
@@ -264,4 +265,28 @@ Herramientas disponibles (servidor MCP `unreal`, §8):
 - Añadir un personaje jugable nuevo no requiere cambios: basta con ser poseído
   por un PlayerController.
 
-*Última actualización: 2026-10-18. Generado para OpenCode + UnrealEngine 5.7 MCP.*
+## 10. Prototipos de colisión OniroCromo (laboratorio Colisiones 2)
+
+En `Source/Onicromo_Beta/OniroCromo/Prototipos/` viven las clases C++ del
+punto 6 de la práctica de colisiones (3 prototipos referidos al GDD). Están
+colocados en `Content/Niveles/Tutorial` (losa "Cube", cara superior `z=-40`,
+alrededor del PlayerStart), etiquetados:
+
+| Prototipo | Clases | Colisión | Comportamiento |
+|---|---|---|---|
+| Placa → Puerta | `AProtoBoton` + `AProtoPuerta` | **Overlap** | Pisar la placa (jugador o bloque con tag `Bloque`) abre la puerta; al liberarse se cierra |
+| Fragmento en mano | `AProtoFragmento` | **Overlap + Attach** | Al tocarlo se pega al jugador (no se consume); tecla **E** lo suelta |
+| Bloque empujable | `AProtoBloque` | **Block + Hit** | Chocar contra él lo desliza (150 cm/empuje, cadencia 0.4 s) |
+
+- Colores leyenda del GDD en `Content/Materiales/`: `M_ProtoBoton` (rojo),
+  `M_ProtoFragmento` (amarillo), `M_ProtoBloque` (verde). La puerta queda gris.
+- Feedback con `ProtoPrint()` de `ProtoUtils.h` (log `LogOniroProto` + mensaje
+  en pantalla, equivalente al nodo Print del laboratorio).
+- Enlace botón→puerta: propiedad `Puerta` (`EditAnywhere`) de `AProtoBoton`;
+  los actores del nivel son instancias de las clases nativas (sin BP hijo).
+  **Si se coloca una instancia nueva de `ProtoBoton` desde el editor, hay que
+  asignarle `Puerta` a mano en los Detalles** (si queda NULL el botón imprime
+  pero no mueve la puerta — incidente 2026-10-20). Las instancias nuevas
+  tampoco heredan los materiales de leyenda: reasignarlos.
+
+*Última actualización: 2026-10-19. Generado para OpenCode + UnrealEngine 5.8 MCP.*
