@@ -46,7 +46,8 @@ Onicromo_Beta/
 │       │   └── UI/          # TwinStickUI
 │       ├── Variant_Strategy/                     # Strategy* (GameMode, Pawn, Unit, PlayerController)
 │       │   └── UI/          # StrategyUI, StrategyHUD
-│       └── OniroCromo/Prototipos/                # Proto* (prototipos de colisión del GDD, laboratorio)
+│       ├── OniroCromo/Prototipos/                # Proto* (prototipos de colisión del GDD, laboratorio)
+│       └── Laboratorio/                           # LabDisparoRaycast (ejercicios 1-2 raycast, Lvl_TopDown)
 ├── Tools/unreal-mcp/server.ts   # Servidor MCP local (Deno, stdio)
 ├── opencode.json                # Config de OpenCode (MCP "unreal")
 └── AGENTS.md                    # Este archivo
@@ -289,4 +290,45 @@ alrededor del PlayerStart), etiquetados:
   pero no mueve la puerta — incidente 2026-10-20). Las instancias nuevas
   tampoco heredan los materiales de leyenda: reasignarlos.
 
-*Última actualización: 2026-10-19. Generado para OpenCode + UnrealEngine 5.8 MCP.*
+## 11. Ejercicios de raycast (laboratorio Colisiones, `Lvl_TopDown`)
+
+`Source/Onicromo_Beta/Laboratorio/LabDisparoRaycast.{h,cpp}` — clase
+`ALabDisparoRaycast` para los ejercicios 1 y 2 de la práctica de colisiones:
+
+1. **Disparo de rayo**: `LineTraceSingleByChannel` (canal Visibility) desde el
+   muzzle hacia el cursor del jugador; rayo visible con `DrawDebugLine` (rojo,
+   0.5 s) e impacto impreso en pantalla/log (`ProtoPrint`: objeto + distancia).
+2. **Fuerza de empuje**: con `FuerzaEmpuje > 0`, `AddImpulseAtLocation` en el
+   punto de impacto — **solo** si el componente `IsSimulatingPhysics()` o el
+   actor tiene el tag **`Empujable`** (el suelo nunca se mueve).
+
+Instancias en `Content/TopDown/Lvl_TopDown` — **estación de tiro propia** en
+zona libre al norte (`0, 1300`), creada para no tocar el resto del lab:
+
+- `Lab_PlataformaRaycast` — losa 1400×600, cara superior `z=+25`
+- `Lab_Raycast01` — ejercicio 1 (`FuerzaEmpuje = 0`)
+- `Lab_RaycastEmpuje02` — ejercicio 2 (`FuerzaEmpuje = 400`)
+- `Lab_Objeto01/02` — dianas del ej. 1: reciben el impacto, **no se mueven**
+- `Lab_Objeto03/04/05` — dianas del ej. 2: física (`set_simulate_physics`) +
+  tag `Empujable`: **vuelan** al impactar
+
+Disparo: **clic izquierdo** + **automático** cada 2 s (toggle `bDisparoAutomatico`
+en Detalles). Los rayos/prints solo existen en PIE. **Verificado en PIE
+2026-10-20**: ambos armamentos disparan cada 2 s, imprimen impacto + distancia
+y la restricción de empuje rechaza correctamente los objetos no empujables.
+
+**Notas Python/MCP aprendidas aquí:**
+
+- `UPROPERTY` bool con prefijo `b`: usar el **nombre crudo de C++**
+  (`set_editor_property("bDisparoAutomatico", True)`); `b_disparo_automatico`
+  **no** existe (en cambio los normales sí son snake_case: `fuerza_empuje`).
+- Física de componente: `comp.set_simulate_physics(True)` y verificar con
+  `comp.get_editor_property("body_instance").get_editor_property("bSimulatePhysics")`
+  — ni `simulate_physics` ni `bSimulatePhysics` existen directamente sobre el
+  componente (`static_mesh` en `UStaticMeshComponent` sí, vía
+  `get_editor_property`, no `get_static_mesh()`).
+- PIE desde MCP: `unreal.EditorLevelLibrary.editor_play_simulate()` /
+  `editor_end_play()` (deprecated pero operativos); `get_pie_worlds()` exige el
+  argumento `include_dedicated_server`.
+
+*Última actualización: 2026-10-20. Generado para OpenCode + UnrealEngine 5.8 MCP.*
