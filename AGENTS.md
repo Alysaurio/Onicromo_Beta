@@ -134,9 +134,12 @@ Onicromo_Beta/
    (`unreal_create_blueprint` ya lo hace; con `unreal_exec_python` usar
    `unreal.BlueprintEditorLibrary.compile_blueprint(bp)` +
    `unreal.EditorAssetLibrary.save_asset(...)`).
-4. No romper referencias: antes de eliminar/renombrar un asset, verificar referencias
-   con `unreal.EditorAssetLibrary.find_asset_data(...)` o listar dependencias
-   (`list_dependencies`). **No borrar assets sin confirmación explícita del usuario.**
+4. No romper referencias: antes de eliminar un asset, verificar referencias con
+   `unreal.EditorAssetLibrary.find_package_referencers_for_asset(...)` y listar
+   dependencias. **Autonomía vigente (§12.1): se puede borrar sin preguntar**, pero
+   solo si el listado de referenciadores está vacío; si hay referencias, abortar y
+   reportar. **Nunca renombrar un Blueprint cargado**: `rename_asset` sobre un BP
+   compilado en la sesión tumbó el editor (ver §12.3).
 5. Los BPs de una variante viven en `Content/Variant_<Nombre>/`; los del template en
    `Content/TopDown/`. Respetar esa organización al crear nuevos.
 6. Tags de actores: usar `ActorTags` para marcar categorías jugables
@@ -174,13 +177,21 @@ Herramientas disponibles (servidor MCP `unreal`, §8):
    (`get_actors`/`set_transform` devuelve el estado resultante; validar el `ok:true`).
 5. **Spawning**: siempre indicar `class_path` completo. Clases de motor:
    `/Script/Engine.StaticMeshActor`; Blueprints: `/Game/.../BP_X.BP_X_C`.
-6. **Sin borrar ni sobrescribir** actores/assets existentes sin pedir confirmación.
-   `unreal_create_blueprint` falla si el asset ya existe (por diseño).
+6. **Autonomía de borrado** (§12.1): se pueden eliminar actores temporales (`Temp_*`),
+   duplicados y assets sin referenciadores **sin pedir confirmación**. Antes de
+   destruir un asset, comprobar referenciadores; antes de destruir un actor del
+   nivel, comprobar que su label coincide con el patrón esperado.
+   `unreal_create_blueprint` sigue fallando si el asset ya existe (por diseño):
+   en ese caso, borrar/reemplazar de forma explícita, no silenciosa.
 7. **PIE**: si el editor está en Play, los cambios afectan a la sesión de juego
    (se descartan al parar). Verificar `unreal_status.in_pie` antes de editar niveles.
-8. **Guardado**: las herramientas guardan assets de Blueprint creados por MCP.
-   **Los mapas NO se guardan automáticamente**: pedir confirmación antes de
-   `unreal.EditorLevelLibrary.save_current_level()` / `save_all_dirty_levels`.
+8. **Guardado (autonomía vigente, §12.1)**: guardar **automáticamente** tras
+   cualquier cambio, sin preguntar:
+   - Assets/Blueprints: `unreal.EditorAssetLibrary.save_loaded_asset(bp)` (tras
+     `compile_blueprint`).
+   - Niveles: `unreal.get_editor_subsystem(unreal.LevelEditorSubsystem).save_current_level()`.
+   - Verificar siempre con `save_current_level() == True` y/o la fecha del `.umap`
+     en disco antes de dar el cambio por persistido.
 9. **Game thread**: los comandos MCP corren en el game thread. Nada de `sleep`
    largo en Python remoto; para operaciones largas, trocear en varias llamadas.
 10. **Errores**: si el resultado trae `isError` o `success:false`, leer el traceback
@@ -331,4 +342,114 @@ y la restricción de empuje rechaza correctamente los objetos no empujables.
   `editor_end_play()` (deprecated pero operativos); `get_pie_worlds()` exige el
   argumento `include_dedicated_server`.
 
-*Última actualización: 2026-10-20. Generado para OpenCode + UnrealEngine 5.8 MCP.*
+## 12. Autonomía operativa y capacidades verificadas de la API (2026-10-28)
+
+### 12.1 Autonomía permanente (sustituye a las reglas de confirmación)
+
+Autorización explícita y permanente del propietario del proyecto:
+
+1. **Guardar sin preguntar**: niveles (`save_current_level`) y assets
+   (`save_loaded_asset`) tras cualquier cambio. No detener el flujo para pedir
+   aprobación.
+2. **Borrar sin preguntar**: actores temporales (`Temp_*`), duplicados de
+   sondeo y assets sin referenciadores. Comprobar referenciadores antes de
+   borrar un asset; si los hay, reportar en vez de forzar.
+3. **Sobrescribir assets modificados** en lugar de crear variantes nuevas.
+4. Aun así se mantiene: no borrar `Saved/`, `Intermediate/`, `Binaries/`,
+   `DerivedDataCache/` (§1) y no romper assets del usuario sin avisar del
+   resultado.
+
+### 12.2 Lo que SÍ se puede hacer por Python (verificado en 5.8.3)
+
+| Capacidad | API verificada |
+|---|---|
+| Crear Blueprint con padre | `unreal.BlueprintFactory` + `AssetToolsHelpers.get_asset_tools().create_asset(...)` y `create_blueprint_asset_with_parent` |
+| Añadir componentes (SCS) | `unreal.SubobjectDataSubsystem` (`add_new_subobject`, `attach_subobject`, `rename`) |
+| Añadir variables miembro | `BlueprintEditorLibrary.add_member_variable(bp, name, EdGraphPinType)` |
+| Crear grafo de función | `BlueprintEditorLibrary.add_function_graph(bp, 'Nombre')` |
+| Crear nodo de **evento** | `BlueprintEditorLibrary.add_event_override(bp, 'ReceiveBeginPlay', unreal.IntPoint(x,y))` — **el `position` es obligatorio** |
+| Crear event dispatchers | `add_event_dispatcher`, `add_event_dispatcher_parameter` |
+| Enumerar grafos/eventos/pines | `list_graphs`, `find_graph`, `list_events`, `list_all_pins`, `list_input_pins`, `list_output_pins` |
+| Mover nodos / leer título | `get_node_pos`, `set_node_pos`, `get_node_title`, `get_node_size` |
+| **Conectar pines** | `BlueprintGraphPin.try_create_connection`, `can_create_connection`, `break_pin_links`, `list_connected_pins` |
+| Compilar / guardar / duplicar / borrar | `compile_blueprint`, `save_loaded_asset`, `duplicate_asset`, `delete_asset`, `does_asset_exist` |
+| Referenciadores | `find_package_referencers_for_asset` (devuelve lista de rutas) |
+
+### 12.3 Puntos ciegos REALES (verificados, no suposiciones)
+
+| Límite | Evidencia |
+|---|---|
+| **No existe `unreal.BehaviorTreeGraph`** | `hasattr(unreal,'BehaviorTreeGraph') == False`; `UBehaviorTree` no expone ninguna propiedad de grafo (`bt_graph`, `graph` → "Failed to find property") y no tiene métodos con "graph". **El árbol de comportamiento solo se edita en la UI.** |
+| **No hay API para crear nodos arbitrarios de lógica** | `BlueprintEditorLibrary` no tiene `add_node`/`create_node`; `EdGraph.Nodes` es **protected** ("Property 'Nodes' ... is protected and cannot be read"); `unreal.new_object(unreal.K2Node_CallFunction, outer=graph)` crea el objeto pero queda **huérfano** (0 pines, `K2Node_CallFunction` no expone `function_reference`). Conclusión: se pueden crear **nodos de evento/dispatcher**, no cadenas de lógica genéricas. La lógica va en C++ o en la UI. |
+| **Blackboard: `FBlackboardKeySelector` es transient** | `selected_key_id`/`selected_key_type` no sobreviven a `SavePackage`; asignar `selected_key_name` por Python deja la key en `None` al guardar. Las keys se eligen en la UI. |
+| **`UBlackboardKeyType_Object` es `MinimalAPI`** | `base_class` inaccesible desde Python. |
+| **Componentes SCS no están en el CDO** | `get_component_by_class(unreal.PawnSensingComponent)` sobre el CDO devuelve `None`: las propiedades de componentes SCS se editan en la UI del BP. |
+| **🔴 `rename_asset` sobre un BP cargado TUMBA EL EDITOR** | Crash 2026-10-28 22:45:46, callstack `UnrealEditor-PythonScriptPlugin.dll` → `python311.dll` → `Core.dll`, ejecutando `rename_asset` en un BP creado y compilado en la misma sesión. **Prohibido renombrar Blueprints por Python.** |
+| **`delete_asset` puede devolver `False` sin log** | Ocurrió con el BP que tenía nodos huérfanos de `new_object`. **Y peor: sobre ESE asset concreto, `delete_asset` tumbaba el editor** (2 crashes consecutivos, reinicio automático). Workaround definitivo que funcionó: **borrar el `.uasset` a nivel de disco con el editor abierto** (el asset solo estaba en el AssetRegistry, no cargado) y luego `AssetRegistry.scan_paths_synchronous([...], True)` para limpiar la entrada. |
+| **Constructores de structs: `unreal.Rotator(a,b,c)` = (roll, pitch, yaw)** | Verificado: `unreal.Rotator(0,180,0)` produce `pitch=180, yaw=0`. **Usar `unreal.Rotator()` y asignar `.pitch/.yaw/.roll`**, o pasar la rotación al MCP que sí interpreta `[Pitch, Yaw, Roll]`. |
+| **`b`-prefix necesita el nombre crudo** | `bStartAILogicOnPossess` ✅ / `b_start_ai_logic_on_possess` ❌. |
+
+### 12.4 Límites duros del protocolo MCP (constantes de `Tools/unreal-mcp/server.ts`)
+
+- Descubrimiento UDP multicast `239.0.0.1:6766`, TTL 1, bind `127.0.0.1` → **solo local**, timeout **12 s**.
+- **Un único canal TCP** `127.0.0.1:6776` y **un solo comando en vuelo** (`#pendingResult` + `toolCallQueue`): las llamadas **se serializan**, no hay paralelismo real contra el editor.
+- Timeouts: `unreal_exec_python` **120 s**, resto **60 s**.
+- Todo corre en el **game thread**: mientras el script se ejecuta el editor está congelado.
+
+---
+
+## 13. Banco de percepción automatizado y calibración de `PawnSensing` (2026-10-28)
+
+Instrumentación: `Tools/perception_bench.py` (banco) + `Tools/perception_bench_results.md`
+(telemetría) + `Tools/keep_editor_focus.ps1` (guardián de foco).
+
+### 13.1 Reglas de oro medidas
+
+1. **`PeripheralVisionAngle` es un SEMIángulo**: `CouldSeePawn` compara
+   `dot(dirección, facing) >= cos(angle)`. Un valor de `90` da un FOV de **180°**
+   (no 90°). Verificado: la frontera de detección cae exactamente en ±el valor
+   configurado (90/120/140/160 → FOV 180/240/280/320°, cono ciego trasero
+   180/120/80/40°).
+2. **`SensingInterval` es la ventana de invisibilidad**: la latencia sensor→`ISeeEnemy`
+   es uniforme en `[0, intervalo]` (media intervalo/2). Medido: 0.5 s → 57–492 ms;
+   0.2 s → 26–178 ms; 0.1 s → 8–84 ms.
+3. **`SetValueBlackBoard` cuesta 1 frame**: `ISeeEnemy` → clave del Blackboard se
+   midió en 8–13 ms a 112 Hz. Intercalar lógica ahí no añade retardo.
+4. **El latch de pérdida es del Blueprint, no del componente**: `ISeeEnemy` tarda
+   ~604 ms en pasar a `false` tras romper la oclusión **y también** con
+   `SensingInterval = 0.1` (idéntico con 0.5). Es el `ResetEnemy` del BP
+   (≈0.6 s); redunda en ~615 ms para limpiar `HasSeePlayer?`.
+
+### 13.2 Trampa de instrumentación: el editor sin foco corre a 3 FPS
+
+`UEditorEngine::GetMaxTickRate()` devuelve `3.0f` cuando
+`ShouldThrottleCPUUsage()` (ventana no enfocada, `bThrottleCPUWhenNotForeground`
+por defecto `True`). El mundo de PIE avanza entonces en cuantos de **333.3 ms** y
+toda latencia sale como múltiplo de 333.3/666.7 ms (medición falsa; ocurrió en el
+primer barrido). No se puede arreglar desde Python (`EditorPerformanceSettings`
+no está expuesto y solo se lee al arrancar): hay que **traer la ventana al frente**
+(`Tools/keep_editor_focus.ps1`; `SetForegroundWindow` directo falla por
+focus-stealing, hace falta `AttachThreadInput` + `keybd_event(ALT)`). Comprobar
+siempre con `bench_fps_report()`: debe dar >50 Hz.
+
+### 13.3 Detalles de API confirmados aquí
+
+| Punto | Verificación |
+|---|---|
+| `AIController.line_of_sight_to(other, view_point, alternate_checks)` | expuesto en Python; **es el oráculo exacto** (misma función que usa `PawnSensingComponent::HasLineOfSightTo`), usar `alternate_checks=True` |
+| `SM_*` como oclusor | validar SIEMPRE con `line_of_sight_to`: las rampas no ocluyen a altura de ojos (z+`BaseEyeHeight` 64) aunque una traza horizontal sí choque. Oclusores validados: `SM_Cube13`, `SM_Cube8`, `SM_Cube` |
+| `Actor.get_actor_bounds(False)` | devuelve **2-tupla** `(origin, box_extent)` |
+| `SystemLibrary.line_trace_single` | `FHitResult.to_tuple()`: índice **9** = actor, **10** = componente |
+| `unreal.Vector` aritmética | no soporta `-` entre structs en este build: calcular por campos |
+| `PawnSensingComponent.on_see_pawn` | delegado dinámico enlazable desde Python (`add_callable`) |
+| Estado Python | los `globals()` **persisten** entre llamadas a `unreal_exec_python` (permite bancos con estado) |
+
+---
+
+*Última actualización: 2026-10-28. §12 añadido: autonomía operativa permanente y
+capacidades/límites verificados de la API Python en UE 5.8.3. §13 añadido: banco
+de percepción automatizado, semántica de semiángulo de `PawnSensing`, telemetría
+de latencia y trampa del throttle a 3 FPS. Generado para
+OpenCode + UnrealEngine 5.8 MCP.*
+
+
