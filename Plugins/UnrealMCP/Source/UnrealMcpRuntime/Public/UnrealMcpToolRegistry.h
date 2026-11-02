@@ -1,0 +1,426 @@
+// Copyright (c) 2026 Ivan Murzak. Licensed under the Apache License, Version 2.0.
+// See the LICENSE file in the repository root for more information.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Dom/JsonObject.h"
+#include "HAL/ThreadSafeBool.h"
+#include "Templates/Function.h"
+#include "UnrealMcpEnablementFilter.h"
+// The generic registry template (TUnrealMcpRegistry) + the shared FUnrealMcpExtensionRegistrationResult.
+// FUnrealMcpToolRegistry is one instantiation of it (the prompt + resource registries are the other two).
+#include "UnrealMcpRegistry.h"
+
+/**
+ * Core tool-registration types for the Unreal-MCP plugin (docs/ARCHITECTURE.md §2, §3.3).
+ *
+ * The registry is the plugin-owned source of truth for the tool set. Each core family declares its
+ * tools through the fluent FUnrealMcpToolBuilder; the registry compiles each declaration into a JSON
+ * descriptor (the §2.2 manifest shape) and dispatches incoming tool-calls to the declared handler.
+ * The sidecar mirrors the manifest into MCP ProxyTools; the C++ side never knows about MCP.
+ */
+
+/** Whether a declared parameter is required or optional. */
+enum class EUnrealMcpParamRequirement : uint8
+{
+	Optional,
+	Required
+};
+
+/**
+ * Which SURFACE a tool is served on (docs/ARCHITECTURE.md §2.4). The 1:1 C++ mirror of the shared
+ * `com.IvanMurzak.McpPlugin.McpToolType` the C# engines (Unity / Godot) express as
+ * `[AiTool(..., ToolType = McpToolType.System)]`:
+ *
+ *   - `Standard` — advertised to MCP clients (`tools/list`) and callable at `/api/tools/<name>`. The default.
+ *   - `System`   — an INTERNAL tool: reachable ONLY over the server's `/api/system-tools/<name>` HTTP
+ *                  route, never advertised to an AI agent. Used for host-plumbing operations a client
+ *                  (the CLI / the desktop app) drives directly — liveness probing and skill authoring.
+ *
+ * The flag travels to the sidecar in the §2.2 manifest descriptor as `toolType` ("standard" | "system");
+ * the sidecar routes each proxied tool onto the matching McpPlugin manager, so a System tool is absent
+ * from `tools/list` AND from `/api/tools/<name>` — exactly Unity's semantics.
+ */
+enum class EUnrealMcpToolType : uint8
+{
+	Standard,
+	System
+};
+
+/** The manifest wire token for @p ToolType ("standard" | "system"). */
+UNREALMCPRUNTIME_API const TCHAR* UnrealMcpToolTypeToString(EUnrealMcpToolType ToolType);
+
+/** Parse a manifest wire token back to a tool type; anything unrecognized (or empty) is `Standard`. */
+UNREALMCPRUNTIME_API EUnrealMcpToolType UnrealMcpToolTypeFromString(const FString& Token);
+
+/** A declared tool parameter (name + JSON-schema type + description). */
+struct UNREALMCPRUNTIME_API FUnrealMcpParamSpec
+{
+	FString Name;
+	FString JsonType;        // "string" | "integer" | "number" | "boolean" | "object" | "array"
+	FString Description;
+	EUnrealMcpParamRequirement Requirement = EUnrealMcpParamRequirement::Optional;
+	TSharedPtr<FJsonObject> ObjectSchema; // verbatim custom schema for object/array/exotic params (e.g. FVector → {x,y,z}, paths → array of string); null for plain scalars
+};
+
+/**
+ * The arguments + cancellation surface handed to a tool handler. The handler runs ON the game thread
+ * (the dispatcher guarantees this, §4); it must never block on bridge state or pump modal UI.
+ */
+struct UNREALMCPRUNTIME_API FUnrealMcpToolCall
+{
+	/** Raw JSON arguments object (never null; empty object when the call carried none). */
+	TSharedPtr<FJsonObject> Arguments;
+
+	/** Cooperative cancellation flag (set by a tool-cancel or a timeout, §4). May be null in tests. */
+	// Held by shared ownership so the flag outlives the bridge's CancelFlags map entry: a copy of this
+	// call object (the dispatcher captures one for the game-thread body) keeps the flag alive even after
+	// the response is sent and the map entry is removed — IsCancelled() can never deref freed memory.
+	TSharedPtr<const FThreadSafeBool, ESPMode::ThreadSafe> CancelRequested;
+
+	/**
+	 * This call's timeout in milliseconds (the sidecar's timeoutMs: UNREAL_MCP_TOOL_TIMEOUT); 0 when unknown (tests). A
+	 * handler that can run long (python-execute) stops its own work before it, so its answer arrives instead of the
+	 * dispatcher's "timed out".
+	 */
+	int32 TimeoutMs = 0;
+	/** When the call arrived (FPlatformTime::Seconds()), so a handler bounds its work by the time left; 0 when unknown. */
+	double ReceivedSeconds = 0.0;
+
+	FUnrealMcpToolCall() : Arguments(MakeShared<FJsonObject>()) {}
+	explicit FUnrealMcpToolCall(const TSharedPtr<FJsonObject>& InArgs)
+		: Arguments(InArgs.IsValid() ? InArgs : MakeShared<FJsonObject>()) {}
+
+	bool Has(const FString& Key) const { return Arguments->HasField(Key); }
+	bool IsCancelled() const { return CancelRequested.IsValid() && *CancelRequested; }
+
+	FString GetString(const FString& Key, const FString& Default = FString()) const;
+	int64 GetInt(const FString& Key, int64 Default = 0) const;
+	double GetNumber(const FString& Key, double Default = 0.0) const;
+	bool GetBool(const FString& Key, bool Default = false) const;
+	FVector GetVector(const FString& Key, const FVector& Default = FVector::ZeroVector) const;
+	FRotator GetRotator(const FString& Key, const FRotator& Default = FRotator::ZeroRotator) const;
+};
+
+/**
+ * One binary image content block carried in a tool result (§1.2 — "binary payloads (screenshots)
+ * travel as base64 strings inside JSON"; §1.3 — the MCP `content` array). The bridge serializes each
+ * into a `{ "type": "image", "data": <base64>, "mimeType": <mime> }` block, which the sidecar maps
+ * 1:1 onto an MCP image ContentBlock (ProxyResponseMapper). The screenshot family (§10) is the first
+ * producer.
+ */
+struct UNREALMCPRUNTIME_API FUnrealMcpImageContent
+{
+	FString Base64Data;               // base64-encoded image bytes (no data: URI prefix)
+	FString MimeType = TEXT("image/png");
+};
+
+/** Terminal result of a tool invocation, mirroring the IPC tool-response shape (§1.3). */
+struct UNREALMCPRUNTIME_API FUnrealMcpToolResult
+{
+	bool bSuccess = true;
+	FString Message;                       // human-readable text content block
+	TSharedPtr<FJsonObject> Structured;    // structured content (may be null)
+	TArray<FUnrealMcpImageContent> Images; // image content blocks, appended after the text block (§1.3)
+	// Not terminal: the dispatcher runs the handler again on a later game-thread tick, until the call's
+	// timeout. For a dependency that comes up after the editor (e.g. Python's first tick). See RetryLater.
+	bool bRetryLater = false;
+	// Message already renders everything Structured holds (python-execute's value and logs, a file's text): the wire
+	// text block is Message alone. Otherwise the text block also carries Structured as condensed JSON (WireText).
+	bool bMessageCoversStructured = false;
+
+	/**
+	 * The text block sent to the MCP client. Many clients hand the model only the `content` text, never
+	 * `structuredContent` (MCP: a tool returning structured content should also return it serialized in a text
+	 * block), so a summary line alone ("Read 'X' (21 line(s)).") would hide the data: Structured is appended as
+	 * condensed JSON on its own line unless bMessageCoversStructured.
+	 */
+	FString WireText() const;
+
+	static FUnrealMcpToolResult Success(const FString& InMessage, const TSharedPtr<FJsonObject>& InStructured = nullptr)
+	{
+		return FUnrealMcpToolResult{ true, InMessage, InStructured };
+	}
+	static FUnrealMcpToolResult Error(const FString& InMessage)
+	{
+		return FUnrealMcpToolResult{ false, InMessage, nullptr };
+	}
+	/**
+	 * "Not ready yet, ask me again": the game-thread dispatcher re-runs the handler on a later tick (it never
+	 * blocks the game thread) until it returns a terminal result or the call times out. @p InReason is logged.
+	 */
+	static FUnrealMcpToolResult RetryLater(const FString& InReason)
+	{
+		FUnrealMcpToolResult Result{ false, InReason, nullptr };
+		Result.bRetryLater = true;
+		return Result;
+	}
+	/**
+	 * Success carrying a single image content block (§10 screenshot family). Deliberately takes NO structured
+	 * content: McpPlugin.Server's direct tool-call endpoint answers `{status, structured}` and drops the
+	 * content array (image included) whenever structured content is set. Put image metadata in @p InMessage.
+	 */
+	static FUnrealMcpToolResult SuccessWithImage(const FString& InMessage, const FString& InBase64Data,
+		const FString& InMimeType = TEXT("image/png"))
+	{
+		FUnrealMcpToolResult Result{ true, InMessage, nullptr };
+		Result.Images.Add(FUnrealMcpImageContent{ InBase64Data, InMimeType });
+		return Result;
+	}
+
+	/**
+	 * DEPRECATED source-compatibility form of SuccessWithImage that still takes structured content (the
+	 * public signature through 0.19: `(Message, Base64, Structured, MimeType = "image/png")`), kept so third-party
+	 * extensions calling it with 3 or 4 arguments keep compiling. It returns exactly what the new form returns
+	 * — one image block, NO structured content — and does not drop the payload: like the screenshot tools'
+	 * metadata, @p InStructured is folded into the text block, appended to @p InMessage as condensed JSON on its
+	 * own line (`<message>\n{"k":v,...}`; just the JSON when the message is empty). A null or empty object adds
+	 * nothing. Migrate by moving the metadata into @p InMessage and calling the 3-argument form.
+	 */
+	UE_DEPRECATED(5.5, "Unreal-MCP (after 0.19): SuccessWithImage no longer takes structured content; it is folded into the text block as JSON. Put the metadata in InMessage and call SuccessWithImage(InMessage, InBase64Data, InMimeType).")
+	static FUnrealMcpToolResult SuccessWithImage(const FString& InMessage, const FString& InBase64Data,
+		const TSharedPtr<FJsonObject>& InStructured, const FString& InMimeType = TEXT("image/png"));
+
+	/**
+	 * DEPRECATED: the old form called with a literal `nullptr` structured argument. Without this exact-match
+	 * overload `SuccessWithImage(Msg, Base64, nullptr)` is ambiguous on clang/GCC (Mac/Linux builds): nullptr
+	 * reaches FString through several char-pointer constructors and TSharedPtr through its null-tag one, two
+	 * indistinguishable user-defined conversions (MSVC is lenient and picks TSharedPtr). Identical to
+	 * SuccessWithImage(InMessage, InBase64Data, InMimeType).
+	 */
+	UE_DEPRECATED(5.5, "Unreal-MCP (after 0.19): SuccessWithImage no longer takes structured content. Drop the nullptr argument: SuccessWithImage(InMessage, InBase64Data, InMimeType).")
+	static FUnrealMcpToolResult SuccessWithImage(const FString& InMessage, const FString& InBase64Data,
+		TYPE_OF_NULLPTR, const FString& InMimeType = TEXT("image/png"))
+	{
+		return SuccessWithImage(InMessage, InBase64Data, InMimeType);
+	}
+};
+
+/** Signature of a tool handler: runs on the game thread, returns a terminal result synchronously. */
+using FUnrealMcpToolHandler = TFunction<FUnrealMcpToolResult(const FUnrealMcpToolCall&)>;
+
+/** A skill shipped by a tool (FUnrealMcpRegisteredTool::Skills). */
+struct FUnrealMcpToolSkill
+{
+	FString Name;
+	FString Description;
+	FString Markdown;
+};
+
+/** A fully compiled tool: descriptor (manifest shape) + handler. */
+struct UNREALMCPRUNTIME_API FUnrealMcpRegisteredTool
+{
+	FString Name;
+	FString Title;
+	FString Description;
+	/**
+	 * A dedicated SHORT skill description (the [AiSkillDescription] analog, docs/ARCHITECTURE.md §7) used for the
+	 * generated SKILL.md YAML front-matter `description:` — distinct from the full Description, which becomes the
+	 * SKILL.md body. Optional per tool; when empty the manifest falls back to the Title (a concise human label),
+	 * and the sidecar generator further falls back to the capped full Description. Declared via the fluent
+	 * FUnrealMcpToolBuilder::SkillDescription(); shipped to the sidecar in ToDescriptorJson() as `skillDescription`.
+	 */
+	FString SkillDescription;
+	/**
+	 * Skills the tool ships beside its own tool page: the sidecar writes each as `<skills>/<Name>/SKILL.md` (front matter
+	 * from Name + Description, then Markdown). rql-query ships the `unreal-rql` skill. Shipped as `skills` only when set,
+	 * so other tools keep their descriptor (and schema hash) unchanged. Declared via FUnrealMcpToolBuilder::Skill().
+	 */
+	TArray<FUnrealMcpToolSkill> Skills;
+	/**
+	 * The RQL role of an rql-* tool (docs/rql.md): "query" / "mutate" (the sidecar parses the `query` text into the
+	 * `plan` argument) or "schema", and the sidecar renders the answer as RQL text. Shipped as `rql` only when set.
+	 */
+	FString Rql;
+	TArray<FUnrealMcpParamSpec> Params;
+	TSharedPtr<FJsonObject> OutputSchema;
+	/**
+	 * The served surface (§2.4). `Standard` (the default) keeps the tool in `tools/list` + `/api/tools/<name>`;
+	 * `System` moves it to `/api/system-tools/<name>` only. Declared via FUnrealMcpToolBuilder::ToolType() and
+	 * shipped to the sidecar in ToDescriptorJson() as `toolType`. It participates in the schema hash, so
+	 * flipping a tool's surface re-registers its sidecar proxy on the OTHER manager (§2.2 changed-entry path).
+	 */
+	EUnrealMcpToolType ToolType = EUnrealMcpToolType::Standard;
+	bool bReadOnlyHint = false;
+	bool bDestructiveHint = false;
+	bool bIdempotentHint = false;
+	bool bOpenWorldHint = false;
+	/** Served at all: false only when the §8 `enabledTools` whitelist excludes the tool (not in the manifest, refused by Execute). */
+	bool bEnabled = true;
+	/**
+	 * Listed in tools/list — the §7 per-tool Visible toggle (`hiddenTools`). Listing only: a hidden tool stays in the
+	 * manifest (wire key `enabled: false`, excluded from the schema hash) and still runs when called by name.
+	 */
+	bool bVisible = true;
+	FString ExtensionId = TEXT("core");
+	FString SchemaHash;
+	FUnrealMcpToolHandler Handler;
+
+	/** Build the JSON Schema for this tool's inputs from its declared params (§3.2 subset). */
+	TSharedPtr<FJsonObject> BuildInputSchema() const;
+
+	/** The §2.2 descriptor object (one entry in tool-manifest.tools[]). */
+	TSharedPtr<FJsonObject> ToDescriptorJson() const;
+};
+
+class FUnrealMcpToolRegistry;
+
+// FUnrealMcpExtensionRegistrationResult moved to the shared UnrealMcpRegistry.h (included above) so all three
+// registries see one definition; it is still visible to every consumer that includes this header.
+
+/** Fluent declaration builder (docs/ARCHITECTURE.md §3.3). One per tool; commits on destruction-free Handle(). */
+class UNREALMCPRUNTIME_API FUnrealMcpToolBuilder
+{
+public:
+	FUnrealMcpToolBuilder(FUnrealMcpToolRegistry& InRegistry, const FString& InName);
+
+	FUnrealMcpToolBuilder& Title(const FString& InTitle);
+	FUnrealMcpToolBuilder& Description(const FString& InDescription);
+	/** Set the SHORT skill description (the [AiSkillDescription] analog → SKILL.md front-matter). Optional. */
+	FUnrealMcpToolBuilder& SkillDescription(const FString& InSkillDescription);
+	/** Ship a skill beside the tool page (`<skills>/<Name>/SKILL.md`). Optional. */
+	FUnrealMcpToolBuilder& Skill(const FString& Name, const FString& Description, const FString& Markdown);
+	/** Mark an rql-* tool: "query" / "mutate" / "schema" (FUnrealMcpRegisteredTool::Rql). Optional. */
+	FUnrealMcpToolBuilder& Rql(const FString& Role);
+	FUnrealMcpToolBuilder& ParamString(const FString& Name, const FString& Desc, EUnrealMcpParamRequirement Req = EUnrealMcpParamRequirement::Optional);
+	FUnrealMcpToolBuilder& ParamInt(const FString& Name, const FString& Desc, EUnrealMcpParamRequirement Req = EUnrealMcpParamRequirement::Optional);
+	FUnrealMcpToolBuilder& ParamNumber(const FString& Name, const FString& Desc, EUnrealMcpParamRequirement Req = EUnrealMcpParamRequirement::Optional);
+	FUnrealMcpToolBuilder& ParamBool(const FString& Name, const FString& Desc, EUnrealMcpParamRequirement Req = EUnrealMcpParamRequirement::Optional);
+	FUnrealMcpToolBuilder& ParamVector(const FString& Name, const FString& Desc, EUnrealMcpParamRequirement Req = EUnrealMcpParamRequirement::Optional);
+	/**
+	 * Generic escape hatch for params whose JSON Schema the typed helpers above do not cover (e.g.
+	 * `{pitch,yaw,roll}` rotators, free-form `object` property bags, `array` lists). Pass the fully
+	 * built schema in @p CustomSchema; it is used verbatim as the param's schema. Families build their
+	 * own schemas locally so the shared builder surface stays small (one method, not one per math type).
+	 */
+	FUnrealMcpToolBuilder& Param(const FString& Name, const FString& JsonType, const FString& Desc, EUnrealMcpParamRequirement Req, TSharedPtr<FJsonObject> CustomSchema = nullptr);
+	/**
+	 * Declare the served SURFACE (§2.4). Omit for the normal case (`Standard`); pass
+	 * `EUnrealMcpToolType::System` for an internal tool that must NOT reach an AI agent's `tools/list`
+	 * and is invoked only over `/api/system-tools/<name>` (the `ping` liveness probe, the skill tools).
+	 */
+	FUnrealMcpToolBuilder& ToolType(EUnrealMcpToolType InToolType);
+	FUnrealMcpToolBuilder& ReadOnlyHint(bool bValue);
+	FUnrealMcpToolBuilder& DestructiveHint(bool bValue);
+	FUnrealMcpToolBuilder& IdempotentHint(bool bValue);
+	FUnrealMcpToolBuilder& OpenWorldHint(bool bValue);
+	FUnrealMcpToolBuilder& ExtensionId(const FString& InExtensionId);
+
+	/** Bind the handler and commit the tool into the registry. */
+	void Handle(FUnrealMcpToolHandler InHandler);
+
+private:
+	FUnrealMcpToolRegistry& Registry;
+	FUnrealMcpRegisteredTool Tool;
+};
+
+/**
+ * Kind-specific policy for the tool registry instantiation of TUnrealMcpRegistry. Supplies the key
+ * accessor (Name), validation (kebab name + bound handler + param specs), the manifest strings, and the
+ * nouns used in collision-rejection messages + log lines.
+ */
+struct UNREALMCPRUNTIME_API FUnrealMcpToolRegistryTraits
+{
+	static const FString& KeyOf(const FUnrealMcpRegisteredTool& Entry) { return Entry.Name; }
+	static const TCHAR* KindNoun() { return TEXT("tool"); }
+	static const TCHAR* KindNounCapitalized() { return TEXT("Tool"); }
+	static const TCHAR* KeyNoun() { return TEXT("name"); }
+	static const TCHAR* ManifestType() { return TEXT("tool-manifest"); }
+	static const TCHAR* ManifestArrayKey() { return TEXT("tools"); }
+	/** True iff @p Name is a valid kebab-case tool id (non-empty; lowercase letters/digits with single internal hyphens). */
+	static bool IsValidKey(const FString& Name);
+	/** Validate a tool descriptor for the §5 isolation contract. Returns false + a reason on the first problem. */
+	static bool Validate(const FUnrealMcpRegisteredTool& InTool, FString& OutError);
+};
+
+/**
+ * The plugin-owned tool registry (docs/ARCHITECTURE.md §2.2). One instantiation of the generic
+ * TUnrealMcpRegistry (which owns the compiled tool set, the manifest snapshot, the §7/§8 enablement, the
+ * extension-scope registration, and the schema-hash). This class adds only the genuinely tool-specific
+ * surface: the fluent builder entry, the kind-named public forwarders that keep the original API stable,
+ * and the Execute dispatch (whose argument + result types are tool-specific).
+ *
+ * A monotonic Revision bumps on every registry change so the sidecar's manifest diff can reason about
+ * ordering (§2.2 step 3). Not thread-safe. All mutation happens at startup (core families Register before
+ * the bridge accepts), so the bridge may read BuildManifestJson() directly from its IPC reader thread on
+ * handshake without a race. Any DYNAMIC re-registration (the §2.2 hot-reload path) MUST marshal both the
+ * mutation and the manifest read through the game-thread dispatcher (§4) — the reader thread must never
+ * observe a half-mutated set.
+ */
+class UNREALMCPRUNTIME_API FUnrealMcpToolRegistry
+	: public TUnrealMcpRegistry<FUnrealMcpToolRegistry, FUnrealMcpRegisteredTool, FUnrealMcpToolRegistryTraits>
+{
+public:
+	/** Begin declaring a tool (docs/ARCHITECTURE.md §3.3 fluent API). */
+	FUnrealMcpToolBuilder Tool(const FString& Name);
+
+	// --- Kind-named API forwarders (preserve the original public surface; the logic lives in the template).
+
+	/** True iff @p Name is a valid kebab-case tool id. */
+	static bool IsValidToolName(const FString& Name) { return FUnrealMcpToolRegistryTraits::IsValidKey(Name); }
+	/** Validate a tool descriptor for the §5 isolation contract. Returns false + a reason on the first problem. */
+	static bool ValidateTool(const FUnrealMcpRegisteredTool& InTool, FString& OutError) { return FUnrealMcpToolRegistryTraits::Validate(InTool, OutError); }
+
+	bool HasTool(const FString& Name) const { return Has(Name); }
+	/** Remove every tool stamped with @p ExtensionId (hot-unload / rebuild, §5). Returns count removed. */
+	int32 RemoveToolsForExtension(const FString& ExtensionId) { return RemoveForExtension(ExtensionId); }
+	/** Every registered tool name, sorted (the §7 MCP Tools window enumerates the full set, enabled or not). */
+	TArray<FString> GetToolNamesSorted() const { return GetKeysSorted(); }
+
+	/**
+	 * True iff @p Name passes the §8 EnabledTools whitelist gate — the STATIC env-driven dimension of the
+	 * served predicate, independent of the §7 Visible toggle. The §7 MCP Tools window reads this to surface
+	 * whitelist-gated tools, which the per-tool Visible toggle cannot serve.
+	 */
+	bool PassesEnabledToolsWhitelist(const FString& Name) const { return PassesWhitelist(Name); }
+
+	/**
+	 * Set one tool's Visible flag directly — a GRANULAR helper, NOT the production §7 toggle (that path is
+	 * view-model → OnToolVisibilityChanged → ApplyHiddenTools, a whole-list re-apply). Used by tests + any future
+	 * single-tool caller. Does NOT update the retained hidden list, so the next filter recompute overrides it.
+	 * Game-thread only.
+	 */
+	bool SetToolVisible(const FString& Name, bool bVisible) { return SetVisible(Name, bVisible); }
+	/** Count of tools that are served and listed in tools/list. */
+	int32 NumVisibleTools() const { return NumVisible(); }
+
+	/** The old granular helper, behaviour kept: false takes the tool out of the manifest and Execute refuses it. */
+	UE_DEPRECATED(5.5, "Use SetToolVisible to hide a tool from tools/list (it stays callable), or SetEnabledToolsFilter to stop serving it.")
+	bool SetToolEnabled(const FString& Name, bool bEnabled) { return SetEnabled(Name, bEnabled); }
+
+	/**
+	 * Set the §8 env whitelist (UNREAL_MCP_TOOLS / Config.EnabledTools). RETAINED, re-evaluated on every
+	 * re-registration + ApplyHiddenTools re-apply. A tool outside a non-empty whitelist is not served at all (not in
+	 * the manifest, refused by Execute); the Visible toggle cannot override that. Game-thread only.
+	 */
+	void SetEnabledToolsFilter(const TArray<FString>& EnabledTools) { SetWhitelistFilter(EnabledTools); }
+
+	/**
+	 * Apply the persisted §7 per-tool Visible toggles (the MCP Tools window's `hiddenTools` list). A hidden tool is
+	 * left out of tools/list but stays in the manifest and still runs when called by name. RETAINED, so an extension
+	 * hot-reload that re-registers tools FRESH re-applies it rather than showing a hidden one again; re-applying never
+	 * clobbers the whitelist. Idempotent. Game-thread only.
+	 */
+	void ApplyHiddenTools(const TArray<FString>& HiddenNames) { ApplyHiddenList(HiddenNames); }
+
+	UE_DEPRECATED(5.5, "Renamed to ApplyHiddenTools: a listed tool is only hidden from tools/list; tools/call still runs it.")
+	void ApplyDisabledTools(const TArray<FString>& HiddenNames) { ApplyHiddenTools(HiddenNames); }
+
+	/**
+	 * Execute a tool by name on the CURRENT thread (the dispatcher has already marshalled to the game
+	 * thread). Returns an error result for an unknown tool or one the §8 whitelist does not serve; a tool hidden by
+	 * the Visible toggle runs like any other. The handler owns argument interpretation.
+	 */
+	FUnrealMcpToolResult Execute(const FString& Name, const FUnrealMcpToolCall& Call) const;
+
+	/** True while a tool handler runs (an agent's call), so editor-wide guards can tell agent actions from the user's. Game-thread only. */
+	static bool IsExecutingTool();
+
+	/**
+	 * Record that a guard refused part of the running call (e.g. saving an engine package). Execute turns the call's
+	 * result into an error that carries @p Reason, so the agent never reads a refused write as done. Ignored when no
+	 * tool is running. Game-thread only.
+	 */
+	static void AddCallRefusal(const FString& Reason);
+};

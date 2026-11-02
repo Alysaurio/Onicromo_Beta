@@ -1,0 +1,316 @@
+// Copyright (c) 2026 Ivan Murzak. Licensed under the Apache License, Version 2.0.
+// See the LICENSE file in the repository root for more information.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Dom/JsonObject.h"
+
+/** Which MCP server the plugin connects to (docs/ARCHITECTURE.md §8). Mirrors Godot/Unity. */
+enum class EUnrealMcpConnectionMode : uint8
+{
+	/** A user-supplied server URL (local dev server, self-hosted, …). */
+	Custom,
+	/** The hosted ai-game.dev cloud server. */
+	Cloud
+};
+
+/**
+ * The Custom-mode local-server auth mode (mcp-authorize g5/g6, §8). Only meaningful in
+ * EUnrealMcpConnectionMode::Custom — Cloud-mode auth is the device-code flow. Mirrors the shared
+ * Consts.MCP.Server.AuthOption { none, oauth, token } the McpPlugin launch-arg builder consumes.
+ * The retired legacy `Required` value is migrated to Token on load (TryParseAuthOption accepts the
+ * old "Required" string and maps it to Token so an existing config keeps working).
+ */
+enum class EUnrealMcpAuthOption : uint8
+{
+	/** Anonymous / loopback trust — no credential (server launched `auth=none`). The crash-safe default. */
+	None,
+	/** Account-gated OAuth 2.1 — server launched `auth=oauth` with `auth-issuer` + `public-url`; client authorizes natively (URL-only config). */
+	Oauth,
+	/** Offline shared secret — server launched `auth=token token=<secret>`; client config carries `Authorization: Bearer <secret>`. */
+	Token
+};
+
+/**
+ * The client transport an AI agent uses to reach the MCP server (docs/ARCHITECTURE.md §7/§8) — the C++ analog
+ * of Unity's TransportMethod (stdio / streamableHttp). The user picks it in the AI Game Developer window under
+ * the Custom connection method; in Cloud mode it is LOCKED to Http (the cloud is HTTP-only — mirrors Unity's
+ * "Cloud forces streamableHttp"). It is the typed view of the existing FUnrealMcpConfig::Transport string field
+ * ("stdio" / "http"), so it persists + env-overrides through the same §8 layer with no extra storage.
+ */
+enum class EUnrealMcpTransportMethod : uint8
+{
+	/** The agent launches the MCP server itself over stdio (config carries command + args). */
+	Stdio,
+	/** The agent connects to a running MCP server over streamable HTTP (config carries url + headers). */
+	Http
+};
+
+/**
+ * Connection + environment configuration for the UnrealMCP plugin (docs/ARCHITECTURE.md §8). The C++
+ * analog of Godot's GodotMcpConfig + GodotMcpEnvFile + Unity's EnvironmentUtils.OverrideRecord:
+ *
+ *  - Persisted on disk as camelCase JSON at <Project>/Saved/Config/UnrealMcp/ai-game-developer-config.json
+ *    (Saved/ is gitignored by every UE template, so tokens never land in VCS by default).
+ *  - Layered with a project-root <Project>/.env file (parsed with EXACTLY GodotMcpEnvFile's rules) and the
+ *    process environment, with precedence — highest wins — process env > .env > config file > defaults.
+ *  - Env/.env overrides are NEVER persisted back: the Unity OverrideRecord baseline-restore pattern is
+ *    carried over so Save() round-trips the on-disk baseline while the in-memory config keeps the override.
+ *  - Tokens are NEVER logged at any level (see MaskSecret); only their presence may surface.
+ *
+ * The effective connection config reaches the sidecar EXCLUSIVELY via the §1.3 `config` IPC message
+ * (and the handshake-ack), built by BuildEffectiveConnectionConfig() — the plugin resolves Cloud/Custom
+ * host, token and mode here; the sidecar never re-resolves it (§1.5).
+ *
+ * The parsing / precedence / persistence surface is pure (CoreMinimal + Json only, env/file readers are
+ * injectable) so it is fully drivable from the UnrealMcpEditorTests Automation specs with no real process
+ * env or files. All symbols are UNREALMCPRUNTIME_API-exported so the Tests module links against them.
+ */
+class FUnrealMcpConfig
+{
+public:
+	// --- Recognized environment-variable names (§8). ---
+	static UNREALMCPRUNTIME_API const TCHAR* EnvConnectionMode; // UNREAL_MCP_CONNECTION_MODE
+	static UNREALMCPRUNTIME_API const TCHAR* EnvHost;           // UNREAL_MCP_HOST
+	static UNREALMCPRUNTIME_API const TCHAR* EnvCloudUrl;       // UNREAL_MCP_CLOUD_URL
+	static UNREALMCPRUNTIME_API const TCHAR* EnvToken;          // UNREAL_MCP_TOKEN
+	static UNREALMCPRUNTIME_API const TCHAR* EnvAuthOption;     // UNREAL_MCP_AUTH_OPTION
+	static UNREALMCPRUNTIME_API const TCHAR* EnvKeepConnected;  // UNREAL_MCP_KEEP_CONNECTED
+	static UNREALMCPRUNTIME_API const TCHAR* EnvTools;          // UNREAL_MCP_TOOLS
+	static UNREALMCPRUNTIME_API const TCHAR* EnvStartServer;    // UNREAL_MCP_START_SERVER
+	static UNREALMCPRUNTIME_API const TCHAR* EnvTransport;      // UNREAL_MCP_TRANSPORT
+	static UNREALMCPRUNTIME_API const TCHAR* EnvLogLevel;       // UNREAL_MCP_LOG_LEVEL
+	static UNREALMCPRUNTIME_API const TCHAR* EnvBridgePath;     // UNREAL_MCP_BRIDGE_PATH (dev-only, §6)
+	static UNREALMCPRUNTIME_API const TCHAR* EnvToolTimeout;    // UNREAL_MCP_TOOL_TIMEOUT (milliseconds)
+
+	// --- Defaults. ---
+	static UNREALMCPRUNTIME_API const TCHAR* DefaultCloudBaseUrl; // https://ai-game.dev
+	// http://localhost — deliberately PORT-LESS so the local-server bind port falls through to the
+	// deterministic per-project derivation (issue #252); see the definition's comment.
+	static UNREALMCPRUNTIME_API const TCHAR* DefaultCustomHost;
+	static UNREALMCPRUNTIME_API const TCHAR* DefaultLogLevel;     // Info
+	static UNREALMCPRUNTIME_API const TCHAR* DefaultTransport;    // http
+	/** Per-tool-call timeout default; mirrors the sidecar's IpcProtocol.DefaultToolTimeoutMs. */
+	static constexpr int32 DefaultToolTimeoutMs = 300000;
+	/** Added to the tool timeout for the server's own wait (ResolveServerToolTimeoutMs), so the editor's timeout answers first. */
+	static constexpr int32 ServerPluginTimeoutMarginMs = 10000;
+	/** The server's `plugin-timeout` when it also honours `tool-timeout`: a plain connection timeout (McpPlugin's default). */
+	static constexpr int32 ServerConnectionTimeoutMs = 10000;
+
+	// --- Live (post-override) backing fields, serialized to the camelCase JSON keys in the comments. ---
+	EUnrealMcpConnectionMode ConnectionMode = EUnrealMcpConnectionMode::Cloud; // "connectionMode"
+	FString CustomHost;        // "host"
+	FString CustomToken;       // "token"
+	FString CloudToken;        // "cloudToken"
+	FString CloudUrl;          // "cloudUrl"  (cloud base URL override)
+	EUnrealMcpAuthOption AuthOption = EUnrealMcpAuthOption::None; // "authOption"
+	bool bKeepConnected = true;                                  // "keepConnected"
+	FString LogLevel;          // "logLevel"
+	FString Transport;         // "transport"
+	bool bStartServer = false; // "startServer"
+	// "toolTimeoutMs" — per-tool-call timeout pushed to the sidecar (UNREAL_MCP_TOOL_TIMEOUT override). Only positive values are accepted.
+	int32 ToolTimeoutMs = DefaultToolTimeoutMs;
+	// Not persisted: true for a game's runtime-mode connection (UUnrealMcpRuntimeSubsystem). The sidecar declares the
+	// connection's role to the server ("clientRole" -> client_role), which keeps one editor and one runtime side by side.
+	bool bRuntimeConnection = false;
+	TArray<FString> EnabledTools; // "enabledTools" (UNREAL_MCP_TOOLS override; empty = no override)
+	// "hiddenTools" — the per-tool Visible toggles persisted by the §7 MCP Tools window. A tool listed here is left
+	// out of tools/list; it still runs when an MCP client calls it by name (the toggle is not an access control).
+	// Default-empty means every tool is visible, and a tool added by a later plugin update is visible unless the user
+	// hides it. Orthogonal to EnabledTools (the env power-user filter, which decides whether a tool is served at all).
+	// Load() also reads the pre-rename key "disabledTools" (merged in); Save() writes "hiddenTools" only. No env
+	// override — it is pure UI persistence, so Save() always round-trips the live value.
+	TArray<FString> HiddenTools; // "hiddenTools" (legacy read: "disabledTools")
+	// "selectedAgentId" — the AI-agent-configurator dropdown selection persisted by the §7 Agent Configurators
+	// panel (e.g. "claude-code"/"cursor"). Pure presentation state, NO env override — Save() always round-trips
+	// the live value. Defaults to the first reference agent so a fresh project opens on a valid selection.
+	FString SelectedAgentId = TEXT("claude-code"); // "selectedAgentId"
+	// "skillAutoGenerateAgents" — the set of agent ids the user enabled per-agent "auto-generate skills" for (the
+	// §7 Agent Configurators skills toggle, issue #53 Phase C). The C++ analog of Unity's per-agent SkillAutoGenerate
+	// map; modelled as a string LIST (like enabledTools/hiddenTools) since the JSON layer has no native map helper.
+	// Pure UI persistence, NO env override — Save() always round-trips the live value. Empty = no agent auto-generates.
+	TArray<FString> SkillAutoGenerateAgents; // "skillAutoGenerateAgents"
+	// "skillsPath" — the user-overridable skills folder for the Custom ("Other") agent (issue #53 Phase C, mirrors
+	// Unity's editable UnityMcpPluginEditor.SkillsPath). Project-relative; only the Custom configurator reads it (the
+	// built-in agents return their own constant). Defaults to ".claude/skills". Pure UI persistence, NO env override.
+	FString SkillsPath = TEXT(".claude/skills"); // "skillsPath"
+
+	UNREALMCPRUNTIME_API FUnrealMcpConfig();
+
+	// --- Standard on-disk locations (production paths; resolved from the live project). ---
+	/** <Project>/Saved/Config/UnrealMcp/ai-game-developer-config.json (§8). */
+	static UNREALMCPRUNTIME_API FString DefaultConfigFilePath();
+	/** <Project>/.env (§8). */
+	static UNREALMCPRUNTIME_API FString DefaultEnvFilePath();
+
+	/**
+	 * Production convenience: load the on-disk config (if any), parse <Project>/.env, then apply env/.env
+	 * overrides with full precedence, and return the resolved config. Reads real process env + files.
+	 */
+	static UNREALMCPRUNTIME_API FUnrealMcpConfig LoadAndResolve();
+
+	/**
+	 * Same as LoadAndResolve() but with an already-parsed @p DotEnv map, so a caller that needs the parsed
+	 * .env for another purpose (e.g. ExportDotEnvToProcessEnv) does not parse the file twice.
+	 */
+	static UNREALMCPRUNTIME_API FUnrealMcpConfig LoadAndResolve(const TMap<FString, FString>& DotEnv);
+
+	/**
+	 * Load the persisted config JSON at @p Path into the backing fields, and snapshot the result as the
+	 * disk baseline (used by Save() to round-trip env/.env overrides away). A missing/empty/corrupt file
+	 * is the common first-run case — fields keep their defaults and the baseline is the default snapshot.
+	 * Never throws.
+	 */
+	UNREALMCPRUNTIME_API void LoadFromFile(const FString& Path);
+
+	/** Set the disk baseline directly from a parsed JSON object (or defaults when null). LoadFromFile delegates here; also the injectable seam for tests. */
+	UNREALMCPRUNTIME_API void LoadFromJson(const TSharedPtr<FJsonObject>& Json);
+
+	/**
+	 * Apply the .env values (lower precedence) then the process env (higher precedence) on top of the
+	 * current fields, recording which keys were overridden so Save() can restore the baseline. @p EnvReader
+	 * resolves a process-env var (returns false when unset); inject a stub in tests. @p DotEnv is the parsed
+	 * .env map (see ParseEnvLines / LoadEnvFile); pass an empty map to disable the file layer.
+	 */
+	UNREALMCPRUNTIME_API void ApplyOverrides(const TMap<FString, FString>& DotEnv, const TFunction<bool(const FString&, FString&)>& EnvReader);
+
+	/** Serialize the CURRENT (post-override) field values to a camelCase JSON object. */
+	UNREALMCPRUNTIME_API TSharedPtr<FJsonObject> ToJson() const;
+
+	/**
+	 * Serialize to @p Path, restoring the disk baseline for every env/.env-overridden key first so an
+	 * override is never persisted (Unity OverrideRecord pattern). The in-memory fields are unchanged.
+	 * Creates the parent directory. Returns false on a genuine write failure.
+	 */
+	UNREALMCPRUNTIME_API bool Save(const FString& Path) const;
+
+	/**
+	 * Build the effective connection config the plugin pushes to the sidecar (§1.3 `config` / handshake-ack):
+	 * resolves mode → host/cloudUrl, and mode+auth → token. Keys: mode, host, cloudUrl, token, authOption, explicitToken, keepConnected, toolTimeoutMs.
+	 * The token is the resolved bearer (empty in Custom+None) — the sidecar sends it verbatim, never re-resolves.
+	 */
+	UNREALMCPRUNTIME_API TSharedPtr<FJsonObject> BuildEffectiveConnectionConfig() const;
+
+	// --- Transport (the typed view of the Transport string field, §7/§8). ---
+
+	/**
+	 * The persisted transport as a typed enum (the typed view of the Transport string). An unrecognized/blank
+	 * stored value falls back to Http (the default the snippet/connection prefer). NOTE: this is the RAW stored
+	 * intent — it does NOT apply the Cloud→Http lock; use ResolveEffectiveTransport() for the connection-aware
+	 * value the UI/snippets must honour.
+	 */
+	UNREALMCPRUNTIME_API EUnrealMcpTransportMethod GetTransportMethod() const;
+	/** Set the transport from the typed enum (writes the matching "stdio"/"http" string into Transport). */
+	UNREALMCPRUNTIME_API void SetTransportMethod(EUnrealMcpTransportMethod InMethod);
+	/**
+	 * The connection-aware transport the UI offers and the snippets reflect: in Cloud mode this is ALWAYS Http
+	 * (the cloud is HTTP-only — mirrors Unity's "Cloud forces streamableHttp"); in Custom mode it is the stored
+	 * GetTransportMethod(). This is the value the agent configurators render a single transport for.
+	 */
+	UNREALMCPRUNTIME_API EUnrealMcpTransportMethod ResolveEffectiveTransport() const;
+
+	/** Parse a transport string ("stdio"/"http", case-insensitive) into the enum; unknown → Http. */
+	static UNREALMCPRUNTIME_API EUnrealMcpTransportMethod ParseTransport(const FString& Raw);
+	/** The canonical lowercase string ("stdio"/"http") for a transport enum (the persisted form). */
+	static UNREALMCPRUNTIME_API const TCHAR* TransportToString(EUnrealMcpTransportMethod Method);
+
+	/**
+	 * The canonical lowercase auth-mode string ("none"/"oauth"/"token") — the value the shared McpPlugin
+	 * ServerLaunchArguments builder + the gamedev-mcp-server CLI consume (the `auth=<mode>` launch arg), and
+	 * the value the g6 consolidation forwards over IPC to the sidecar. The C++ side NEVER assembles the launch
+	 * arg string itself (the sidecar's shared builder owns that); this is only the mode token.
+	 */
+	static UNREALMCPRUNTIME_API const TCHAR* AuthOptionToString(EUnrealMcpAuthOption Option);
+
+	/** The resolved cloud base URL (CloudUrl override or DefaultCloudBaseUrl), trailing slash trimmed. */
+	UNREALMCPRUNTIME_API FString ResolveCloudBaseUrl() const;
+	/** The resolved Custom-mode host (CustomHost or DefaultCustomHost), trailing slash trimmed. */
+	UNREALMCPRUNTIME_API FString ResolveCustomHost() const;
+	/**
+	 * How long the MCP server should wait for one tool call: ToolTimeoutMs plus ServerPluginTimeoutMarginMs (clamped),
+	 * so the editor's own timeout error reaches the caller before the server gives up. Passed as `tool-timeout`.
+	 */
+	UNREALMCPRUNTIME_API int32 ResolveServerToolTimeoutMs() const;
+	/**
+	 * The `plugin-timeout` for a local MCP server launch. A server that honours `tool-timeout` (McpPlugin.Server
+	 * 8.11.0+, @p bServerHasToolTimeout) sends a tool call once and bounds it by `tool-timeout`, so `plugin-timeout`
+	 * is only the connection timeout (ServerConnectionTimeoutMs). An older server waits `plugin-timeout` per attempt
+	 * and then RE-SENDS the call (up to 10 times), so it gets ResolveServerToolTimeoutMs, or a long call times out early.
+	 * Agent configs always use ResolveServerToolTimeoutMs: the shared writer cannot emit `tool-timeout`, and a new
+	 * server defaults it to max(300 s, plugin-timeout), so that value is right for both server generations.
+	 */
+	UNREALMCPRUNTIME_API int32 ResolveServerPluginTimeoutMs(bool bServerHasToolTimeout) const;
+	/** The mode+auth-resolved bearer token: Cloud→CloudToken, Custom→(None?empty:CustomToken). */
+	UNREALMCPRUNTIME_API FString ResolveEffectiveToken() const;
+
+	/** Whether ApplyOverrides recorded any env/.env override (for diagnostics/tests). */
+	bool HasOverrides() const { return OverriddenKeys.Num() > 0; }
+	bool IsOverridden(const FString& JsonKey) const { return OverriddenKeys.Contains(JsonKey); }
+
+	// --- Pure .env parsing (EXACTLY GodotMcpEnvFile's rules, §8). ---
+
+	/**
+	 * Parse .env-style lines into the recognized UNREAL_MCP_* values: skip blank lines and `#` comments,
+	 * split on the FIRST `=`, trim the key, keep only recognized keys (case-sensitive), sanitize the value
+	 * (trim whitespace + one pair of wrapping single OR double quotes), skip a blank value, last occurrence
+	 * wins. The returned map is keyed by the full UNREAL_MCP_* name.
+	 */
+	static UNREALMCPRUNTIME_API TMap<FString, FString> ParseEnvLines(const TArray<FString>& Lines);
+
+	/** Read + parse the .env file at @p Path. A missing/unreadable file returns an empty map (never throws). */
+	static UNREALMCPRUNTIME_API TMap<FString, FString> LoadEnvFile(const FString& Path);
+
+	/**
+	 * Read ONE arbitrary key's sanitized value from the .env file at @p Path — NOT limited to the recognized
+	 * UNREAL_MCP_* connection keys ParseEnvLines keeps. The C++ analog of Godot's GodotMcpEnvFile.LookupRaw:
+	 * used by features outside the connection config (e.g. the dev-control bridge gate, UNREAL_MCP_DEV_CONTROL)
+	 * that want the same "process env > .env > default" precedence — the caller checks process env first, then
+	 * falls back to this. Same line rules as ParseEnvLines (skip blanks/`#`, split on first `=`, case-sensitive
+	 * key, sanitize value, last occurrence wins). Returns an empty string when the file is missing/unreadable,
+	 * the key is absent, or its value is blank. Never throws.
+	 */
+	static UNREALMCPRUNTIME_API FString LookupEnvFileValue(const FString& Path, const FString& Key);
+
+	/**
+	 * Export the UNREAL_MCP_BRIDGE_PATH .env value into the editor's process environment (and ONLY that key),
+	 * set-if-absent so the §8 precedence "process env > .env" is preserved. That is the single var the editor
+	 * process itself must read out-of-band (FUnrealMcpSidecarManager resolves the sidecar binary from it, §6),
+	 * and it is not a secret. HOST/CLOUD_URL/TOKEN are intentionally NOT exported: the sidecar gets them via
+	 * the authoritative §1.3 `config` push, so process-env export would only leak the bearer token into every
+	 * editor child and pin stale .env values at process-env precedence on a later re-resolve.
+	 */
+	static UNREALMCPRUNTIME_API void ExportDotEnvToProcessEnv(const TMap<FString, FString>& DotEnv);
+
+	/**
+	 * Mask a secret for logging: "<unset>" when empty, otherwise "***" (the value never appears). Use this
+	 * EVERYWHERE a token could otherwise reach a log line (§8 — tokens never logged at any level).
+	 */
+	static UNREALMCPRUNTIME_API FString MaskSecret(const FString& Secret);
+
+	/** Sanitize a value identically to a process-env value: trim whitespace + one wrapping quote pair. */
+	static UNREALMCPRUNTIME_API FString SanitizeValue(const FString& Raw);
+
+private:
+	// The disk-baseline JSON snapshot taken at LoadFromFile/LoadFromJson time — the values Save() persists
+	// for any key an env/.env layer overrode. Keys not overridden persist their live (current) value.
+	TSharedPtr<FJsonObject> DiskBaselineJson;
+	// JSON keys that an env/.env layer overrode (so Save() restores their baseline).
+	TSet<FString> OverriddenKeys;
+
+	// Apply a single resolved value (from .env or process env) onto the matching field, recording the
+	// override against its JSON key. @p Source is the effective override value (already sanitized).
+	void ApplyOne(const FString& EnvName, const FString& Source);
+
+	static bool TryParseMode(const FString& Raw, EUnrealMcpConnectionMode& OutMode);
+	static bool TryParseAuthOption(const FString& Raw, EUnrealMcpAuthOption& OutOption);
+
+	/**
+	 * Parse one raw .env line into a trimmed key + sanitized value (the shared line grammar of ParseEnvLines /
+	 * LookupEnvFileValue): trim the line, skip a blank or `#`-comment line, split on the FIRST `=` (with a
+	 * non-empty key), and SanitizeValue the right side. Returns true only when a non-empty key AND a non-empty
+	 * value were parsed; false (with @p OutKey/@p OutValue left empty) for a skipped/blank/empty-value line.
+	 */
+	static bool ParseEnvLine(const FString& RawLine, FString& OutKey, FString& OutValue);
+	static bool TryParseBool(const FString& Raw, bool& OutValue);
+};
