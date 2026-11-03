@@ -63,7 +63,7 @@
 		},
 		{
 			"Name": "BlueprintScreenshotTool",
-			"Enabled": true
+			"Enabled": false
 		}
 	]
 }
