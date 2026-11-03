@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "{6F984350-4874-76EE-0A3E-D3B2AA90D6F9}",
+	"EngineAssociation": "5.8",
 	"Category": "",
 	"Description": "",
 	"Modules": [
@@ -59,6 +59,10 @@
 		},
 		{
 			"Name": "EditorToolset",
+			"Enabled": true
+		},
+		{
+			"Name": "BlueprintScreenshotTool",
 			"Enabled": true
 		}
 	]
