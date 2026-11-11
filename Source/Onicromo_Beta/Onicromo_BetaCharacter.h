@@ -12,7 +12,7 @@ class USpringArmComponent;
 /**
  *  A controllable top-down perspective character
  */
-UCLASS(abstract)
+UCLASS()
 class AOnicromo_BetaCharacter : public ACharacter
 {
 	GENERATED_BODY()
@@ -37,6 +37,9 @@ public:
 
 	/** Update */
 	virtual void Tick(float DeltaSeconds) override;
+
+	/** Damage handling: drains the Blueprint member variable "Vida" (float) and destroys the pawn when it reaches zero */
+	virtual float TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, class AController* EventInstigator, AActor* DamageCauser) override;
 
 	/** Returns the camera component **/
 	UCameraComponent* GetTopDownCameraComponent() const { return TopDownCameraComponent.Get(); }

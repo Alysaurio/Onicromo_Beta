@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "Onicromo_BetaCharacter.h"
+#include "Onicromo_Beta.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Camera/CameraComponent.h"
 #include "Components/DecalComponent.h"
@@ -10,6 +11,9 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Materials/Material.h"
 #include "Engine/World.h"
+#include "Engine/DamageEvents.h"
+#include "UObject/Class.h"
+#include "UObject/UnrealType.h"
 
 AOnicromo_BetaCharacter::AOnicromo_BetaCharacter()
 {
@@ -59,4 +63,27 @@ void AOnicromo_BetaCharacter::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
 
 	// stub
+}
+
+float AOnicromo_BetaCharacter::TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
+{
+	const float ActualDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+
+	if (ActualDamage > 0.0f)
+	{
+		// "Vida" is a Blueprint member variable (float, default 100) defined on the derived pawn
+		if (FFloatProperty* VidaProperty = CastField<FFloatProperty>(GetClass()->FindPropertyByName(TEXT("Vida"))))
+		{
+			float Vida = VidaProperty->GetPropertyValue_InContainer(this);
+			Vida -= ActualDamage;
+			VidaProperty->SetPropertyValue_InContainer(this, Vida);
+
+			if (Vida <= 0.0f)
+			{
+				Destroy();
+			}
+		}
+	}
+
+	return ActualDamage;
 }

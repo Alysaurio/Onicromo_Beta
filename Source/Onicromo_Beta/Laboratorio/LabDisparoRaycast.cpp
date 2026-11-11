@@ -80,14 +80,14 @@ void ALabDisparoRaycast::Disparar()
 
 	if (!bGolpe)
 	{
-		ProtoPrint(TEXT("▶ Raycast: sin impacto (al alcance máximo)"), FColor::Red);
+		// ProtoPrint(TEXT("▶ Raycast: sin impacto (al alcance máximo)"), FColor::Red);
 		return;
 	}
 
 	AActor* Golpeado = Impacto.GetActor();
 	const float Distancia = FVector::Dist(Inicio, Impacto.ImpactPoint);
-	ProtoPrint(FString::Printf(TEXT("▶ Raycast: %s a %.0f cm"),
-		*GetNameSafe(Golpeado), Distancia), FColor::Red);
+	// ProtoPrint(FString::Printf(TEXT("▶ Raycast: %s a %.0f cm"),
+	// 	*GetNameSafe(Golpeado), Distancia), FColor::Red);
 
 	// --- ejercicio 2: fuerza de empuje sobre el impactado ---
 	if (FuerzaEmpuje <= 0.0f)
@@ -109,13 +109,13 @@ void ALabDisparoRaycast::Disparar()
 		Componente->SetSimulatePhysics(true);
 		Componente->WakeRigidBody();
 		Componente->AddImpulseAtLocation(Direccion * FuerzaEmpuje, Impacto.ImpactPoint);
-		ProtoPrint(FString::Printf(TEXT("⚡ Empuje aplicado a %s (%.0f)"),
-			*GetNameSafe(Golpeado), FuerzaEmpuje), FColor::Yellow);
+		// ProtoPrint(FString::Printf(TEXT("⚡ Empuje aplicado a %s (%.0f)"),
+		// 	*GetNameSafe(Golpeado), FuerzaEmpuje), FColor::Yellow);
 	}
 	else
 	{
-		ProtoPrint(FString::Printf(TEXT("✖ %s: sin empuje (no es empujable)"),
-			*GetNameSafe(Golpeado)), FColor::Orange);
+		// ProtoPrint(FString::Printf(TEXT("✖ %s: sin empuje (no es empujable)"),
+		// 	*GetNameSafe(Golpeado)), FColor::Orange);
 	}
 }
 

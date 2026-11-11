@@ -450,7 +450,64 @@ siempre con `bench_fps_report()`: debe dar >50 Hz.
 
 ---
 
-*Última actualización: 2026-10-28. §12 añadido: autonomía operativa permanente y
+## 14. Setup del player Frozono + técnicas verificadas de assets de animación (2026-11-10)
+
+### 14.1 Estado del player (todo automatizado y guardado)
+
+- `BP_TopDownCharacter` (`/Game/TopDown/Blueprints/`): mesh `Frozono_T-Pose`
+  (esqueleto `Frozono_T-Pose_Skeleton`), `anim_class = ABP_Frozono_C`,
+  `override_materials = [frozone_Mat]`, escala del mesh **0.095**
+  (el mesh mide 1873 uu con pivot en los pies → 178 uu ≈ 1,78 m), loc (0,0,-95)
+  como el maniquín. Variable **`Vida`** (float, instance-editable, default 100 en CDO).
+- `ABP_Frozono` (`/Game/TopDown/Blueprints/`): duplicado de `ABP_Unarmed` con
+  `target_skeleton = Frozono_T-Pose_Skeleton` (la propiedad del asset AnimBlueprint
+  **sí** es escribible: `abp.set_editor_property('target_skeleton', skel)`).
+  Retarget de nodos: Walk/Run `BlendSpacePlayer → BS_Frozono_Movimiento`;
+  Idle/Jump/Fall Loop/Land `SequencePlayer → FrozonoIdle`; el nodo ControlRig de
+  foot-IK del maniquín se neutralizó con `AnimNode_ControlRig.alpha = 0.0`
+  (`control_rig_class` está deprecated en 5.8 y no persiste).
+- `BS_Frozono_Movimiento` (`/Game/Modelos3D/Entidades/Player/`): BlendSpace 2D
+  creado con `BlendSpaceFactoryNew` (`target_skeleton` de la factory) replicando
+  los ejes del template (Direction −180…180 / Speed 0…600, mismos nombres para no
+  romper los pins del nodo) y las 27 muestras sustituidas: FrozonoIdle@0,
+  FrozonoWalking@300, FrozonoRunning@600 en las 9 columnas de dirección.
+- Verificado en PIE (simulate): anim instance `ABP_Frozono_C` vivo sobre el mesh,
+  personaje se mueve con `LaunchCharacter` (el ABP usa variables
+  `GroundSpeed`/`Direction` — no "Speed"). La lógica de daño/ragdoll
+  (Event AnyDamage → Vida−=Damage → ragdoll) **no es automatizable** (§12.3).
+
+### 14.2 Puntos ciegos/limitaciones confirmadas en 5.8.4 (Linux)
+
+- `BlendSpace.Skeleton` es read-only: **duplicar** un BS y cambiarle el esqueleto
+  NO funciona (además `set_editor_property('sample_data')` sobre muestras de otro
+  esqueleto se ignora silenciosamente). Hay que crear el BS con la factory.
+- `FBlendParameter` expone `display_name/min/max/grid_num` (no `name`);
+  `to_dict()` del struct devuelve `{}` — usar `get_editor_property`.
+- `add_event_override(bp, 'AnyDamage', pos)` **no hace nada** (devuelve None,
+  sin error): los eventos de daño no se pueden añadir así; solo algunos
+  (`ReceiveExecuteAI` en un BTTask_BP sí se añadió en su día vía editor).
+  `list_events()` devuelve structs `BlueprintFunctionInfo` con `name` +
+  `is_implemented`.
+- Durante PIE: `EditorAssetLibrary.load_asset` puede devolver None, y justo
+  después de `editor_end_play()` el editor queda en estado transitorio donde
+  `save_current_level`/`load_asset` fallan — **reintentar en la llamada siguiente**.
+- `Shot` no captura fuera de PIE; `r.HighResShot 1600x900` vía
+  `execute_console_command` sí captura el viewport activo
+  (`Saved/Screenshots/LinuxEditor/`).
+- PIE con `editor_play_simulate()` posee un **SpectatorPawn** (no el DefaultPawn);
+  para probar pawns de juego, spawnear el BP directamente en el mundo PIE o
+  duplicar actores del editor al PIE (los actores del nivel se copian).
+- Cliente Remote Execution standalone: `rex.py` (ver resumen de sesión); en Linux
+  el socket multicast debe bind a `0.0.0.0` (bind a 127.0.0.1 no recibe paquetes
+  con destino al grupo) y conviene enviar ping/open_connection también unicast a
+  127.0.0.1:6766. El `print()` del editor no vuelve en `command_result`:
+  escribir JSON a `/tmp` y leerlo desde el cliente.
+
+---
+
+*Última actualización: 2026-11-10. §14 añadido: setup del player Frozono (ABP/BS
+retargeteado vía Python) y límites verificados de la API de animación en 5.8.4
+Linux. §12 añadido: autonomía operativa permanente y
 capacidades/límites verificados de la API Python en UE 5.8.3. §13 añadido: banco
 de percepción automatizado, semántica de semiángulo de `PawnSensing`, telemetría
 de latencia y trampa del throttle a 3 FPS. Generado para
