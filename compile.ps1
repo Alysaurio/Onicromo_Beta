@@ -1,0 +1,1 @@
+& "C:\Users\SrDragonDoro\Epic Games\UE_5.8\Engine\Build\BatchFiles\Build.bat" Onicromo_BetaEditor Win64 Development -Project="X:\Actividades\Proyectos de estudio\Unreal Engine\Onicromo_Beta\Onicromo_Beta.uproject" -WaitMutex
