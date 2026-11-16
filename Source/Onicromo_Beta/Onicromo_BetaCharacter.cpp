@@ -31,6 +31,14 @@ AOnicromo_BetaCharacter::AOnicromo_BetaCharacter()
 	GetCharacterMovement()->bConstrainToPlane = true;
 	GetCharacterMovement()->bSnapToPlaneAtStart = true;
 
+	// Default speeds (tunable from BP/Defaults)
+	WalkSpeed = 400.f;
+	RunSpeed = 800.f;
+	GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+
+	// Run state
+	bIsRunning = false;
+
 	// Create the camera boom component
 	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
 
@@ -46,7 +54,7 @@ AOnicromo_BetaCharacter::AOnicromo_BetaCharacter()
 	TopDownCameraComponent->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
 	TopDownCameraComponent->bUsePawnControlRotation = false;
 
-	// Activate ticking in order to update the cursor every frame.
+	// Activate ticking in order to update movement speed every frame.
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = true;
 }
@@ -54,15 +62,62 @@ AOnicromo_BetaCharacter::AOnicromo_BetaCharacter()
 void AOnicromo_BetaCharacter::BeginPlay()
 {
 	Super::BeginPlay();
-
-	// stub
 }
 
 void AOnicromo_BetaCharacter::Tick(float DeltaSeconds)
 {
-    Super::Tick(DeltaSeconds);
+	Super::Tick(DeltaSeconds);
 
-	// stub
+	// Update walk speed based on run state
+	if (GetCharacterMovement())
+	{
+		GetCharacterMovement()->MaxWalkSpeed = bIsRunning ? RunSpeed : WalkSpeed;
+	}
+}
+
+void AOnicromo_BetaCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
+{
+	Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+	// WASD movement axes
+	PlayerInputComponent->BindAxis("MoveForward", this, &AOnicromo_BetaCharacter::MoveForward);
+	PlayerInputComponent->BindAxis("MoveRight", this, &AOnicromo_BetaCharacter::MoveRight);
+
+	// Shift to run
+	PlayerInputComponent->BindAction("Run", IE_Pressed, this, &AOnicromo_BetaCharacter::StartRun);
+	PlayerInputComponent->BindAction("Run", IE_Released, this, &AOnicromo_BetaCharacter::StopRun);
+}
+
+void AOnicromo_BetaCharacter::MoveForward(float Value)
+{
+	if (Value != 0.0f)
+	{
+		const FRotator Rotation = Controller->GetControlRotation();
+		const FRotator YawRotation(0.f, Rotation.Yaw, 0.f);
+		const FVector Direction = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
+		AddMovementInput(Direction, Value);
+	}
+}
+
+void AOnicromo_BetaCharacter::MoveRight(float Value)
+{
+	if (Value != 0.0f)
+	{
+		const FRotator Rotation = Controller->GetControlRotation();
+		const FRotator YawRotation(0.f, Rotation.Yaw, 0.f);
+		const FVector Direction = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
+		AddMovementInput(Direction, Value);
+	}
+}
+
+void AOnicromo_BetaCharacter::StartRun()
+{
+	bIsRunning = true;
+}
+
+void AOnicromo_BetaCharacter::StopRun()
+{
+	bIsRunning = false;
 }
 
 float AOnicromo_BetaCharacter::TakeDamage(float DamageAmount, const FDamageEvent& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
