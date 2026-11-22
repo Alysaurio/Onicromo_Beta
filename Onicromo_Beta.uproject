@@ -51,7 +51,7 @@
 		},
 		{
 			"Name": "ModelContextProtocol",
-			"Enabled": true
+			"Enabled": false
 		},
 		{
 			"Name": "Terminal",
@@ -99,10 +99,6 @@
 		},
 		{
 			"Name": "MLAdapter",
-			"Enabled": true
-		},
-		{
-			"Name": "AllToolsets",
 			"Enabled": true
 		}
 	]

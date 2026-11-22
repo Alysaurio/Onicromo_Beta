@@ -30,10 +30,7 @@ void ATwinStickGameMode::ItemUsed(int32 Value)
 	}
 
 	// update the UI
-	if (UIWidget)
-	{
-		UIWidget->UpdateItems(Value);
-	}
+	UIWidget->UpdateItems(Value);
 }
 
 void ATwinStickGameMode::ScoreUpdate(int32 Value)
@@ -42,10 +39,7 @@ void ATwinStickGameMode::ScoreUpdate(int32 Value)
 	Score += Value * Combo;
 
 	// update the UI
-	if (UIWidget)
-	{
-		UIWidget->UpdateScore(Score);
-	}
+	UIWidget->UpdateScore(Score);
 
 	// update the combo multiplier
 	ComboUpdate();
@@ -54,19 +48,12 @@ void ATwinStickGameMode::ScoreUpdate(int32 Value)
 void ATwinStickGameMode::CreateUI()
 {
 	// avoid creating the UI multiple times
-	if (UIWidget || !UIWidgetClass)
-		return;
-
-	APlayerController* PC = UGameplayStatics::GetPlayerController(GetWorld(), 0);
-	if (!PC)
+	if(UIWidget)
 		return;
 
 	// create the UI widget and add it to the viewport
-	UIWidget = CreateWidget<UTwinStickUI>(PC, UIWidgetClass);
-	if (UIWidget)
-	{
-		UIWidget->AddToViewport(0);
-	}
+	UIWidget = CreateWidget<UTwinStickUI>(UGameplayStatics::GetPlayerController(GetWorld(), 0), UIWidgetClass);
+	UIWidget->AddToViewport(0);
 }
 
 void ATwinStickGameMode::ComboUpdate()

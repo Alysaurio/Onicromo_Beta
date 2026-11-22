@@ -25,7 +25,7 @@ import logging
 import os
 import sys
 
-DEFAULT_UE_ROOT = os.environ.get("UNREAL_ENGINE_ROOT", r"C:\Users\SrDragonDoro\Epic Games\UE_5.8")
+DEFAULT_UE_ROOT = r"C:\Program Files\Epic Games\UE_5.8"
 UE_REMOTE_PY = os.path.join(
     DEFAULT_UE_ROOT,
     "Engine", "Plugins", "Experimental", "PythonScriptPlugin", "Content", "Python",
@@ -64,10 +64,7 @@ def main():
     remote_execution = load_remote_execution()
     remote_execution.set_log_level(logging.ERROR)
 
-    config = remote_execution.RemoteExecutionConfig()
-    # Usar puerto 6780 para no entrar en conflicto con el servidor MCP en 6776
-    config.command_endpoint = ('127.0.0.1', 6780)
-    session = remote_execution.RemoteExecution(config)
+    session = remote_execution.RemoteExecution()
     session.start()
     try:
         # --- 1) Descubrimiento del nodo editor ---
