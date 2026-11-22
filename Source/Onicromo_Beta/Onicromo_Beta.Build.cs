@@ -32,7 +32,8 @@ public class Onicromo_Beta : ModuleRules
 			"Onicromo_Beta/Variant_TwinStick",
 			"Onicromo_Beta/Variant_TwinStick/AI",
 			"Onicromo_Beta/Variant_TwinStick/Gameplay",
-			"Onicromo_Beta/Variant_TwinStick/UI"
+			"Onicromo_Beta/Variant_TwinStick/UI",
+			"Onicromo_Beta/ProyectoIntegrador"
 		});
 
 		// Uncomment if you are using Slate UI
